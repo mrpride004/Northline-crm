@@ -163,7 +163,7 @@ export default function Dashboard() {
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} refresh={refreshAll} />}
-        {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} session={session} />}
+        {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
@@ -420,6 +420,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [confirming, setConfirming] = useState(null);
   const [forwarding, setForwarding] = useState(null);
   const [statusChanging, setStatusChanging] = useState(null);
+  const [exportFrom, setExportFrom] = useState('');
+  const [exportTo, setExportTo] = useState('');
+  const [showExportPicker, setShowExportPicker] = useState(false);
   const [viewingPerson, setViewingPerson] = useState(null);
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
   const [todayOnly, setTodayOnly] = useState(false);
@@ -458,8 +461,17 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   function exportCSV() {
+    const useDateRange = exportFrom || exportTo;
+    const source = useDateRange
+      ? orders.filter(o => {
+          const created = new Date(o.created_at);
+          if (exportFrom && created < new Date(exportFrom)) return false;
+          if (exportTo && created > new Date(exportTo + 'T23:59:59')) return false;
+          return true;
+        })
+      : filtered;
     const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Last Status Update', 'Delivered At'];
-    const rows = filtered.map(o => [
+    const rows = source.map(o => [
       o.id, prodName(o.product_id), o.customer, o.phone, o.phone2 || '', o.state || '', (o.address || '').replace(/\n/g, ' '),
       o.quantity || 1, o.unit_price ?? '', o.delivery_fee ?? 0, o.payment_status || '', o.status,
       o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
@@ -469,12 +481,15 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = useDateRange
+      ? `${exportFrom || 'start'}_to_${exportTo || 'now'}`
+      : new Date().toISOString().slice(0, 10);
     const stateLabel = activeState === 'all' ? 'all-states' : activeState.replace(/\s+/g, '-');
     a.href = url;
     a.download = `orders-backup-${stateLabel}-${stamp}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    setShowExportPicker(false);
   }
 
   async function createOrder(fields) {
@@ -585,10 +600,24 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
               Staff submissions ({staffSubmittedCount})
             </button>
           )}
-          {isAdmin && filtered.length > 0 && <button className="btn" onClick={exportCSV}>⬇ Export backup (CSV)</button>}
+          {isAdmin && <button className="btn" onClick={() => setShowExportPicker(!showExportPicker)}>⬇ Export backup (CSV)</button>}
           {(isAdmin || myRole === 'staff') && <button className="btn primary" onClick={() => setShowNew(true)}>+ New order</button>}
         </div>
       </div>
+
+      {showExportPicker && (
+        <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginBottom: '16px', maxWidth: '460px' }}>
+          <p style={{ fontSize: '12.5px', color: '#4B5566', marginTop: 0, marginBottom: '10px' }}>
+            Leave both blank to export exactly what's currently shown on screen. Set a date range to export
+            <strong> every order</strong> from that period, regardless of the filters above.
+          </p>
+          <div className="row2" style={{ marginBottom: '10px' }}>
+            <div><label className="field-label" style={{ marginTop: 0 }}>From</label><input type="date" value={exportFrom} onChange={e => setExportFrom(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+            <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={exportTo} onChange={e => setExportTo(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+          </div>
+          <button className="btn primary" onClick={exportCSV} style={{ width: '100%' }}>Download CSV</button>
+        </div>
+      )}
 
       <div style={{ marginBottom: '14px' }}>
         <input
@@ -1090,6 +1119,17 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     refresh();
   }
 
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  async function removeUser(id) {
+    await fetch('/api/delete-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userId: id }),
+    });
+    setConfirmDeleteId(null);
+    refresh();
+  }
+
   async function saveAccess(id, productList, sectionList) {
     await supabase.from('profiles').update({ allowed_products: productList, allowed_sections: sectionList.length > 0 ? sectionList : null }).eq('id', id);
     setEditingAccess(null);
@@ -1110,9 +1150,20 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                 {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>({s.role}{s.state ? ` · ${s.state}` : ''}{s.username ? ` · @${s.username}` : ''}) · {load} orders · joined {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'} · last seen {timeAgo(lastSeen && lastSeen[s.id])}</span>
                 {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Not receiving orders</span>}
               </span>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit access</button>
-                <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {confirmDeleteId === s.id ? (
+                  <>
+                    <span style={{ fontSize: '11.5px', color: '#B0483F' }}>Delete permanently?</span>
+                    <button className="btn" style={{ background: '#B0483F', color: '#fff', borderColor: '#B0483F' }} onClick={() => removeUser(s.id)}>Yes, delete</button>
+                    <button className="btn" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit access</button>
+                    <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
+                    <button className="btn" style={{ color: '#B0483F' }} onClick={() => setConfirmDeleteId(s.id)}>Delete</button>
+                  </>
+                )}
               </div>
             </div>
           );

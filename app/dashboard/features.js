@@ -1529,7 +1529,7 @@ export function CommissionPage({ profile, orders, products, session }) {
 }
 
 // ---------- Commission: admin overview ----------
-export function AdminCommissionPage({ profiles, orders, session }) {
+export function AdminCommissionPage({ profiles, orders, products, session }) {
   const [threshold, setThreshold] = useState(0);
   const [claimDay, setClaimDay] = useState(1);
   const [ledgerAll, setLedgerAll] = useState([]);
@@ -1539,19 +1539,25 @@ export function AdminCommissionPage({ profiles, orders, session }) {
   const [freeAmount, setFreeAmount] = useState(0);
   const [freeEligible, setFreeEligible] = useState([]);
   const [savingFree, setSavingFree] = useState(false);
+  const [productRules, setProductRules] = useState({});
+  const [managingProduct, setManagingProduct] = useState(null);
 
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const staffList = profiles.filter(p => p.role === 'staff');
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: rateSetting }, { data: daySetting }, { data: freeRule }] = await Promise.all([
+    const [{ data: rateSetting }, { data: daySetting }, { data: freeRule }, { data: rules }] = await Promise.all([
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
       supabase.from('free_commission_rules').select('*').limit(1).maybeSingle(),
+      supabase.from('commission_rules').select('*'),
     ]);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    const ruleMap = {};
+    (rules || []).forEach(r => { ruleMap[r.product_id] = r; });
+    setProductRules(ruleMap);
     if (freeRule) {
       setFreeActive(freeRule.active); setFreeAmount(freeRule.amount); setFreeEligible(freeRule.eligible_staff || []);
       if (freeRule.active) {
@@ -1628,6 +1634,32 @@ export function AdminCommissionPage({ profiles, orders, session }) {
         <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-4px', marginBottom: '10px' }}>Leave all unchecked to make everyone eligible.</p>
         <button className="btn primary" onClick={saveFreeRule} disabled={savingFree} style={{ width: '100%' }}>{savingFree ? 'Saving…' : 'Save free commission rule'}</button>
       </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Commission by product</h3>
+      <p style={{ fontSize: '12px', color: '#8A93A0', marginBottom: '10px' }}>
+        Every product you've listed shows up here automatically, including any you add later. Nothing earns
+        commission until you configure it — there's no automatic default.
+      </p>
+      <table style={{ marginBottom: '24px' }}>
+        <thead><tr><th>Product</th><th>Standard</th><th>Upsell</th><th>Eligible staff</th><th></th></tr></thead>
+        <tbody>
+          {(!products || products.length === 0) && <tr><td colSpan="5" className="empty">No products added yet.</td></tr>}
+          {(products || []).map(p => {
+            const rule = productRules[p.id];
+            const fmt = (type, value) => type === 'percentage' ? `${value}%` : `₦${Number(value).toLocaleString()}`;
+            return (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td>{!rule ? <span style={{ color: '#8A93A0' }}>Not set</span> : rule.standard_active ? fmt(rule.standard_type, rule.standard_value) : <span style={{ color: '#8A93A0' }}>Off</span>}</td>
+                <td>{!rule ? <span style={{ color: '#8A93A0' }}>Not set</span> : rule.upsell_active ? fmt(rule.upsell_type, rule.upsell_value) : <span style={{ color: '#8A93A0' }}>Off</span>}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{!rule || !rule.eligible_staff || rule.eligible_staff.length === 0 ? 'All staff' : `${rule.eligible_staff.length} selected`}</td>
+                <td style={{ textAlign: 'right' }}><button className="link-btn" onClick={() => setManagingProduct(p)}>Configure</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {managingProduct && <CommissionRuleModal product={managingProduct} profiles={profiles} onClose={() => { setManagingProduct(null); load(); }} />}
 
       <table>
         <thead><tr><th>Staff</th><th>Joined</th><th>Unclaimed balance</th><th>Success rate</th><th>Eligible?</th><th>Last claim</th></tr></thead>
