@@ -395,13 +395,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   async function deductStockForDelivery(o) {
     const product = products.find(p => p.id === o.product_id);
     if (product) {
-      await supabase.from('products').update({ stock_quantity: Math.max(0, product.stock_quantity - (o.quantity || 1)) }).eq('id', product.id);
+      await supabase.rpc('decrement_stock', { p_product_id: product.id, p_amount: o.quantity || 1 });
     }
     if (o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
-        const gift = products.find(p => p.id === pkg.gift_product_id);
-        if (gift) await supabase.from('products').update({ stock_quantity: Math.max(0, gift.stock_quantity - o.gift_quantity) }).eq('id', gift.id);
+        await supabase.rpc('decrement_stock', { p_product_id: pkg.gift_product_id, p_amount: o.gift_quantity });
       }
     }
   }
@@ -626,13 +625,12 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
   async function deductStockForDelivery(o) {
     const product = products.find(p => p.id === o.product_id);
     if (product) {
-      await supabase.from('products').update({ stock_quantity: Math.max(0, product.stock_quantity - (o.quantity || 1)) }).eq('id', product.id);
+      await supabase.rpc('decrement_stock', { p_product_id: product.id, p_amount: o.quantity || 1 });
     }
     if (o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
-        const gift = products.find(p => p.id === pkg.gift_product_id);
-        if (gift) await supabase.from('products').update({ stock_quantity: Math.max(0, gift.stock_quantity - o.gift_quantity) }).eq('id', gift.id);
+        await supabase.rpc('decrement_stock', { p_product_id: pkg.gift_product_id, p_amount: o.gift_quantity });
       }
     }
   }
