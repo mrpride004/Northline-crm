@@ -1248,20 +1248,25 @@ export function CommissionPage({ profile, orders, products, session }) {
   const [ledger, setLedger] = useState([]);
   const [claims, setClaims] = useState([]);
   const [threshold, setThreshold] = useState(0);
+  const [claimDay, setClaimDay] = useState(1);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
   const [msg, setMsg] = useState('');
 
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: led }, { data: cl }, { data: setting }] = await Promise.all([
+    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
     ]);
     setLedger(led || []);
     setClaims(cl || []);
-    setThreshold(setting ? parseFloat(setting.value) || 0 : 0);
+    setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
+    setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
     setLoading(false);
   }
 
@@ -1270,7 +1275,7 @@ export function CommissionPage({ profile, orders, products, session }) {
   const myDeliveredPaid = myDelivered.filter(o => o.payment_status === 'Paid');
   const successRate = myDelivered.length > 0 ? (myDeliveredPaid.length / myDelivered.length) * 100 : 100;
   const eligible = successRate >= threshold;
-  const isMonday = new Date().getDay() === 1;
+  const isClaimDay = new Date().getDay() === claimDay;
 
   const earned = ledger.filter(l => !l.reversed).reduce((sum, l) => sum + Number(l.amount), 0);
   const claimed = claims.reduce((sum, c) => sum + Number(c.amount), 0);
@@ -1288,7 +1293,7 @@ export function CommissionPage({ profile, orders, products, session }) {
   });
 
   async function claim() {
-    if (!isMonday || !eligible || balance <= 0) return;
+    if (!isClaimDay || !eligible || balance <= 0) return;
     setClaiming(true);
     await supabase.from('commission_claims').insert({ staff_id: profile.id, amount: balance });
     setClaiming(false);
@@ -1313,8 +1318,8 @@ export function CommissionPage({ profile, orders, products, session }) {
             <span style={{ fontSize: '12.5px', opacity: 0.75 }}>Deliver more Paid orders to start earning towards your next claim.</span>
           ) : !eligible ? (
             <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>Keep your delivery success rate up to unlock claiming</span>
-          ) : !isMonday ? (
-            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens Monday</span>
+          ) : !isClaimDay ? (
+            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens {DAY_NAMES[claimDay]}</span>
           ) : (
             <button className="btn primary" onClick={claim} disabled={claiming} style={{ background: '#fff', color: '#1F4D44', fontWeight: 700, padding: '11px 28px', fontSize: '14px' }}>
               {claiming ? 'Claiming…' : '🎉 Claim your commission now'}
@@ -1373,25 +1378,33 @@ export function CommissionPage({ profile, orders, products, session }) {
 // ---------- Commission: admin overview ----------
 export function AdminCommissionPage({ profiles, orders, session }) {
   const [threshold, setThreshold] = useState(0);
+  const [claimDay, setClaimDay] = useState(1);
   const [ledgerAll, setLedgerAll] = useState([]);
   const [claimsAll, setClaimsAll] = useState([]);
   const [saving, setSaving] = useState(false);
 
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: setting }, { data: led }, { data: cl }] = await Promise.all([
+    const [{ data: rateSetting }, { data: daySetting }, { data: led }, { data: cl }] = await Promise.all([
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
       supabase.from('commission_ledger').select('*'),
       supabase.from('commission_claims').select('*'),
     ]);
-    setThreshold(setting ? parseFloat(setting.value) || 0 : 0);
+    setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
+    setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
     setLedgerAll(led || []);
     setClaimsAll(cl || []);
   }
 
-  async function saveThreshold() {
+  async function saveSettings() {
     setSaving(true);
-    await supabase.from('app_settings').upsert({ key: 'min_success_rate_to_claim', value: String(threshold) });
+    await Promise.all([
+      supabase.from('app_settings').upsert({ key: 'min_success_rate_to_claim', value: String(threshold) }),
+      supabase.from('app_settings').upsert({ key: 'claim_day', value: String(claimDay) }),
+    ]);
     setSaving(false);
   }
 
@@ -1399,15 +1412,17 @@ export function AdminCommissionPage({ profiles, orders, session }) {
 
   return (
     <div>
-      <div className="topbar"><div><h1 className="page-title">Commission</h1><p className="page-sub">Set the claim eligibility rule and see where every staff member stands.</p></div></div>
+      <div className="topbar"><div><h1 className="page-title">Commission</h1><p className="page-sub">Set the claim eligibility rules and see where every staff member stands.</p></div></div>
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
-        <label className="field-label" style={{ marginTop: 0 }}>Minimum delivery success rate to claim (%)</label>
-        <div className="row2">
-          <input type="number" min="0" max="100" value={threshold} onChange={e => setThreshold(e.target.value)} style={{ padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
-          <button className="btn primary" onClick={saveThreshold} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-        </div>
-        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set to 0 to let everyone claim freely.</p>
+        <label className="field-label" style={{ marginTop: 0 }}>Day of the week claims open</label>
+        <select value={claimDay} onChange={e => setClaimDay(parseInt(e.target.value, 10))} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
+          {DAY_NAMES.map((name, i) => <option key={i} value={i}>{name}</option>)}
+        </select>
+        <label className="field-label">Minimum delivery success rate to claim (%)</label>
+        <input type="number" min="0" max="100" value={threshold} onChange={e => setThreshold(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }} />
+        <button className="btn primary" onClick={saveSettings} disabled={saving} style={{ width: '100%' }}>{saving ? 'Saving…' : 'Save both settings'}</button>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set the rate to 0 to let everyone claim freely regardless of performance.</p>
       </div>
 
       <table>

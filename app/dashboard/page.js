@@ -927,7 +927,6 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                   {o.preferred_time && <div>⏰ {o.preferred_time}</div>}
                   {!o.reschedule_date && !o.preferred_time && '—'}
                 </td>
-                </td>
                 <td>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
                   {o.status === 'Delivered' && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
