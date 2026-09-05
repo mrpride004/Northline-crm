@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal } from './features';
 
 export default function Dashboard() {
   const router = useRouter();
@@ -342,6 +342,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [customerView, setCustomerView] = useState(null);
   const [confirming, setConfirming] = useState(null);
   const [forwarding, setForwarding] = useState(null);
+  const [statusChanging, setStatusChanging] = useState(null);
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
   const byState = activeState === 'all' ? byProduct : byProduct.filter(o => o.state === activeState);
@@ -405,15 +406,22 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     }
   }
 
-  async function updateOrder(id, patch, meta) {
+  async function updateOrder(id, patch, meta, remark) {
     const current = orders.find(o => o.id === id);
     if (patch.status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
+      patch.payment_status = 'Paid';
       if (current && current.status !== 'Delivered') await deductStockForDelivery(current);
     }
     await supabase.from('orders').update(patch).eq('id', id);
     if (patch.status && current && patch.status !== current.status) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
+      if (patch.status === 'Delivered') {
+        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Payment received on delivery — ₦${Number(patch.delivery_fee ?? current.delivery_fee ?? 0).toLocaleString()} delivery fee collected. Payment status set to Paid.` });
+      }
+    }
+    if (remark && remark.trim()) {
+      await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
     }
     if (meta === 'assigned') {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
@@ -486,7 +494,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {isAdmin || (myRole === 'staff' && o.staff_id === myId) ? (
-                      <select className="status-sel" value={o.status} onChange={e => updateOrder(o.id, { status: e.target.value })}>
+                      <select className="status-sel" value={o.status} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                         {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     ) : <span className={'pill ' + o.status}>{o.status}</span>}
@@ -530,6 +538,18 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             await updateOrder(forwarding.id, { forwarded_to: companyId });
             await logEvent({ order_id: forwarding.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Order forwarded to external dispatch company' });
             setForwarding(null);
+          }}
+        />
+      )}
+      {statusChanging && (
+        <StatusRemarkModal
+          order={statusChanging.order} newStatus={statusChanging.newStatus}
+          onClose={() => setStatusChanging(null)}
+          onConfirm={({ remark, fee }) => {
+            const patch = { status: statusChanging.newStatus };
+            if (statusChanging.newStatus === 'Delivered') patch.delivery_fee = fee;
+            updateOrder(statusChanging.order.id, patch, null, remark);
+            setStatusChanging(null);
           }}
         />
       )}
@@ -600,7 +620,7 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
 
 function DispatchPage({ orders, products, packages, profile, refresh }) {
   const [confirming, setConfirming] = useState(null);
-  const [deliveringOrder, setDeliveringOrder] = useState(null);
+  const [statusChanging, setStatusChanging] = useState(null);
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
 
   async function deductStockForDelivery(o) {
@@ -617,20 +637,26 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
     }
   }
 
-  async function markDelivered(o, deliveryFee) {
-    await deductStockForDelivery(o);
-    await supabase.from('orders').update({ status: 'Delivered', delivered_at: new Date().toISOString(), delivery_fee: deliveryFee }).eq('id', o.id);
-    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: 'Delivered', note: `Delivery fee entered: ₦${deliveryFee}` });
-    setDeliveringOrder(null);
+  async function applyStatusChange(o, status, { remark, fee } = {}) {
+    const patch = { status };
+    if (status === 'Delivered') {
+      patch.delivered_at = new Date().toISOString();
+      patch.delivery_fee = fee ?? 0;
+      patch.payment_status = 'Paid';
+      await deductStockForDelivery(o);
+    }
+    await supabase.from('orders').update(patch).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
+    if (status === 'Delivered') {
+      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Payment received on delivery — ₦${Number(fee || 0).toLocaleString()} delivery fee collected. Payment status set to Paid.` });
+    }
+    if (remark && remark.trim()) {
+      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
+    }
+    setStatusChanging(null);
     refresh();
   }
 
-  async function setStatus(o, status) {
-    const patch = { status };
-    await supabase.from('orders').update(patch).eq('id', o.id);
-    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
-    refresh();
-  }
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
@@ -648,9 +674,9 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
                   {o.status !== 'Delivered' && o.status !== 'New' && <>
-                    <button className="btn primary" onClick={() => setDeliveringOrder(o)}>Delivered</button>{' '}
-                    <button className="btn" onClick={() => setStatus(o, 'Unreachable')}>Unreachable</button>{' '}
-                    <button className="btn" onClick={() => setStatus(o, 'Rescheduled')}>Reschedule</button>
+                    <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>{' '}
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>{' '}
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>
                   </>}
                 </td>
               </tr>
@@ -659,27 +685,13 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
         </table>
       )}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
-      {deliveringOrder && <DeliveryFeeModal order={deliveringOrder} onClose={() => setDeliveringOrder(null)} onConfirm={(fee) => markDelivered(deliveringOrder, fee)} />}
-    </div>
-  );
-}
-
-function DeliveryFeeModal({ order, onClose, onConfirm }) {
-  const [fee, setFee] = useState(order.delivery_fee || '');
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>Confirm delivery · {order.customer}</h3>
-        <label style={{ marginTop: 0 }}>Delivery fee you collected/charged (₦)</label>
-        <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
-        <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '8px' }}>
-          This is subtracted from the order's revenue and tracked separately in Reports as a delivery charge.
-        </p>
-        <div className="modal-actions">
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => onConfirm(parseFloat(fee) || 0)}>Confirm delivered</button>
-        </div>
-      </div>
+      {statusChanging && (
+        <StatusRemarkModal
+          order={statusChanging.order} newStatus={statusChanging.newStatus}
+          onClose={() => setStatusChanging(null)}
+          onConfirm={({ remark, fee }) => applyStatusChange(statusChanging.order, statusChanging.newStatus, { remark, fee })}
+        />
+      )}
     </div>
   );
 }

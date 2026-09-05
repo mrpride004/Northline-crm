@@ -126,6 +126,37 @@ export function MyStockPage({ profile, agentStock, products }) {
 }
 
 // ---------- Confirm order (priority + preferred time + remark, before dispatch) ----------
+// ---------- Status change with optional remark (and delivery fee if delivering) ----------
+export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
+  const [remark, setRemark] = useState('');
+  const [fee, setFee] = useState(order.delivery_fee || '');
+  const isDelivering = newStatus === 'Delivered';
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Mark as {newStatus}</h3>
+        {isDelivering && (
+          <>
+            <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
+            <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
+            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '4px' }}>
+              Since this is delivered, payment status will automatically be set to <strong>Paid</strong>, and
+              it'll show up for admin and staff right away.
+            </p>
+          </>
+        )}
+        <label style={{ marginTop: isDelivering ? '14px' : 0 }}>Remark (optional)</label>
+        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!isDelivering} />
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0 })}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ConfirmOrderModal({ order, profile, onClose, onConfirmed }) {
   const [priority, setPriority] = useState(order.priority || 'Normal');
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
