@@ -409,15 +409,11 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     const current = orders.find(o => o.id === id);
     if (patch.status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
-      patch.payment_status = 'Paid';
       if (current && current.status !== 'Delivered') await deductStockForDelivery(current);
     }
     await supabase.from('orders').update(patch).eq('id', id);
     if (patch.status && current && patch.status !== current.status) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
-      if (patch.status === 'Delivered') {
-        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Payment received on delivery — ₦${Number(patch.delivery_fee ?? current.delivery_fee ?? 0).toLocaleString()} delivery fee collected. Payment status set to Paid.` });
-      }
     }
     if (remark && remark.trim()) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
@@ -425,6 +421,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     if (meta === 'assigned') {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
     }
+    refresh();
+  }
+
+  async function markPaid(o) {
+    await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed — marked as Paid.' });
     refresh();
   }
 
@@ -484,7 +486,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
-                  <div style={{ color: '#8A93A0', marginTop: '3px' }}>₦{orderTotal(o).toLocaleString()}</div>
+                  {isAdmin && <div style={{ color: '#8A93A0', marginTop: '3px' }}>₦{orderTotal(o).toLocaleString()}</div>}
+                  {isAdmin && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   {o.staff_id ? staffName(o.staff_id) : <span style={{ color: '#B0483F' }}>Unassigned staff</span>}
@@ -544,9 +547,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <StatusRemarkModal
           order={statusChanging.order} newStatus={statusChanging.newStatus}
           onClose={() => setStatusChanging(null)}
-          onConfirm={({ remark, fee }) => {
+          onConfirm={({ remark, fee, rescheduleDate }) => {
             const patch = { status: statusChanging.newStatus };
             if (statusChanging.newStatus === 'Delivered') patch.delivery_fee = fee;
+            if (statusChanging.newStatus === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
             updateOrder(statusChanging.order.id, patch, null, remark);
             setStatusChanging(null);
           }}
@@ -617,6 +621,31 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
   );
 }
 
+function DeliveryFeeCell({ order, onSave }) {
+  const [value, setValue] = useState(order.delivery_fee || '');
+  const [editing, setEditing] = useState(false);
+
+  if (!editing) {
+    return (
+      <div>
+        <span style={{ fontSize: '13px' }}>₦{Number(order.delivery_fee || 0).toLocaleString()}</span>{' '}
+        <button className="link-btn" onClick={() => setEditing(true)} style={{ fontSize: '11px' }}>Edit</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+      <input
+        type="number" min="0" value={value} onChange={e => setValue(e.target.value)}
+        style={{ width: '90px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px', fontSize: '12px' }}
+        autoFocus
+      />
+      <button className="link-btn" onClick={() => { onSave(value); setEditing(false); }} style={{ fontSize: '11px' }}>Save</button>
+      <button className="link-btn" onClick={() => setEditing(false)} style={{ fontSize: '11px' }}>Cancel</button>
+    </div>
+  );
+}
+
 function DispatchPage({ orders, products, packages, profile, refresh }) {
   const [confirming, setConfirming] = useState(null);
   const [statusChanging, setStatusChanging] = useState(null);
@@ -635,23 +664,33 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
     }
   }
 
-  async function applyStatusChange(o, status, { remark, fee } = {}) {
+  async function applyStatusChange(o, status, { remark, fee, rescheduleDate } = {}) {
     const patch = { status };
     if (status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
       patch.delivery_fee = fee ?? 0;
-      patch.payment_status = 'Paid';
       await deductStockForDelivery(o);
     }
+    if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
     await supabase.from('orders').update(patch).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
-    if (status === 'Delivered') {
-      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Payment received on delivery — ₦${Number(fee || 0).toLocaleString()} delivery fee collected. Payment status set to Paid.` });
-    }
     if (remark && remark.trim()) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
     }
     setStatusChanging(null);
+    refresh();
+  }
+
+  async function markPaid(o) {
+    await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed by dispatch — marked as Paid.' });
+    refresh();
+  }
+
+  async function setDeliveryFee(o, fee) {
+    const amount = parseFloat(fee) || 0;
+    await supabase.from('orders').update({ delivery_fee: amount }).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Delivery fee set to ₦${amount.toLocaleString()} by dispatch.` });
     refresh();
   }
 
@@ -660,7 +699,7 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
       {orders.length === 0 ? <div className="empty">No deliveries assigned to you yet.</div> : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Address</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Payment</th><th></th></tr></thead>
           <tbody>
             {orders.map(o => (
               <tr key={o.id}>
@@ -668,13 +707,23 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
                 <td>{prodName(o.product_id)}</td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div></td>
                 <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
-                <td><span className={'pill ' + o.status}>{o.status}</span></td>
+                <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
+                <td>
+                  <span className={'pill ' + o.status}>{o.status}</span>
+                  {o.status === 'Rescheduled' && o.reschedule_date && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>→ {o.reschedule_date}</div>}
+                </td>
+                <td>
+                  <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
+                  {o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
-                  {o.status !== 'Delivered' && o.status !== 'New' && <>
+                  {o.status !== 'Delivered' && o.status !== 'Cancelled' && o.status !== 'New' && <>
                     <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>{' '}
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Dispatched' })}>In Transit</button>{' '}
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>{' '}
                     <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>{' '}
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Cancelled' })}>Cancel</button>
                   </>}
                 </td>
               </tr>
@@ -687,7 +736,7 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
         <StatusRemarkModal
           order={statusChanging.order} newStatus={statusChanging.newStatus}
           onClose={() => setStatusChanging(null)}
-          onConfirm={({ remark, fee }) => applyStatusChange(statusChanging.order, statusChanging.newStatus, { remark, fee })}
+          onConfirm={({ remark, fee, rescheduleDate }) => applyStatusChange(statusChanging.order, statusChanging.newStatus, { remark, fee, rescheduleDate })}
         />
       )}
     </div>

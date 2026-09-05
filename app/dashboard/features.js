@@ -130,7 +130,9 @@ export function MyStockPage({ profile, agentStock, products }) {
 export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
   const [remark, setRemark] = useState('');
   const [fee, setFee] = useState(order.delivery_fee || '');
+  const [rescheduleDate, setRescheduleDate] = useState(order.reschedule_date || '');
   const isDelivering = newStatus === 'Delivered';
+  const isRescheduling = newStatus === 'Rescheduled';
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -141,16 +143,22 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
             <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
             <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
             <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '4px' }}>
-              Since this is delivered, payment status will automatically be set to <strong>Paid</strong>, and
-              it'll show up for admin and staff right away.
+              This is tracked separately from payment. Once delivered, use the "Mark Paid" button when payment
+              has actually been received.
             </p>
           </>
         )}
-        <label style={{ marginTop: isDelivering ? '14px' : 0 }}>Remark (optional)</label>
-        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!isDelivering} />
+        {isRescheduling && (
+          <>
+            <label style={{ marginTop: 0 }}>New delivery date</label>
+            <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} autoFocus />
+          </>
+        )}
+        <label style={{ marginTop: (isDelivering || isRescheduling) ? '14px' : 0 }}>Remark (optional)</label>
+        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!isDelivering && !isRescheduling} />
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0 })}>Confirm</button>
+          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate })}>Confirm</button>
         </div>
       </div>
     </div>
