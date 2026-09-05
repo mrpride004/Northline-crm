@@ -39,6 +39,7 @@ export async function POST(request) {
     role,
     state: state || null,
     active: true,
+    email,
     allowed_products: allowed_products && allowed_products.length > 0 ? allowed_products : null,
     allowed_sections: allowed_sections && allowed_sections.length > 0 ? allowed_sections : null,
     username: username ? username.trim().toLowerCase() : null,

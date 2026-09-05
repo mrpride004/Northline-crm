@@ -153,7 +153,7 @@ export default function Dashboard() {
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
-        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} lastSeen={lastSeen} refresh={refreshAll} />}
+        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
@@ -234,8 +234,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
   const [giftQuantity, setGiftQuantity] = useState(order ? order.gift_quantity || 0 : 0);
   const [state, setState] = useState(order ? order.state || '' : '');
   const [dispatchId, setDispatchId] = useState(order ? order.dispatch_id || '' : '');
-
-  const productPackages = (packages || []).filter(p => p.product_id === productId);
+  const [stockError, setStockError] = useState('');
   const selectedPackage = productPackages.find(p => p.id === packageId);
   const giftProduct = selectedPackage ? products.find(p => p.id === selectedPackage.gift_product_id) : null;
   const dispatchInState = (profiles || []).filter(p => p.role === 'dispatch' && p.active && state && p.state === state);
@@ -250,6 +249,13 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
 
   function save() {
     if (!customer.trim() || !productId) return;
+    if (!order) {
+      const product = products.find(p => p.id === productId);
+      if (!product || product.stock_quantity <= 0) {
+        setStockError('This product is out of stock — add inventory before creating this order.');
+        return;
+      }
+    }
     onSave({
       product_id: productId, customer: customer.trim(), phone: phone.trim(), address: address.trim(), notes: notes.trim(),
       quantity: parseInt(quantity, 10) || 1,
@@ -271,7 +277,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
         <h3>{order ? 'Edit order' : 'New order'}</h3>
         <label>Product</label>
         <select value={productId} onChange={e => { setProductId(e.target.value); setPackageId(''); setGiftQuantity(0); }}>
-          {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.stock_quantity ?? 0} in stock)</option>)}
+          {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name} ({p.stock_quantity ?? 0} in stock){(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
         </select>
         {productPackages.length > 0 && (
           <>
@@ -342,6 +348,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
         <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} />
         <label>Notes (optional)</label>
         <textarea value={notes} onChange={e => setNotes(e.target.value)} />
+        {stockError && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '10px' }}>{stockError}</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={save}>{order ? 'Save changes' : 'Create order'}</button>
@@ -390,7 +397,7 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
-function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, lastSeen, refresh }) {
+function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, lastSeen, session, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
   const [statusTab, setStatusTab] = useState('all');
@@ -615,7 +622,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   {o.staff_id ? <span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.staff_id))}>{personName(o.staff_id)}</span> : <span style={{ color: '#B0483F' }}>Unassigned staff</span>}
-                  {o.dispatch_id ? <div style={{ color: '#8A93A0' }}><span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.dispatch_id))}>{personName(o.dispatch_id)}</span></div> : null}
+                  {o.dispatch_id ? (
+                    <div style={{ color: '#8A93A0' }}>
+                      <span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.dispatch_id))}>{personName(o.dispatch_id)}</span>
+                      {isAdmin && Number(o.delivery_fee || 0) > 0 && <div style={{ fontSize: '10.5px' }}>Charged: ₦{Number(o.delivery_fee).toLocaleString()}</div>}
+                    </div>
+                  ) : null}
                 </td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -669,7 +681,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
-      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} onClose={() => setViewingPerson(null)} />}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
       {forwarding && (
         <ForwardModal
           order={forwarding} products={products} companies={dispatchCompanies || []}
@@ -1107,7 +1119,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
           <EditAccessModal person={editingAccess} products={products} onClose={() => setEditingAccess(null)} onSave={saveAccess} />
         </div>
       )}
-      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} onClose={() => setViewingPerson(null)} />}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
     </div>
   );
 }

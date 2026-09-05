@@ -92,6 +92,7 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   const [amounts, setAmounts] = useState({});
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [errors, setErrors] = useState({});
   const dispatchList = profiles.filter(p => p.role === 'dispatch');
   const selected = dispatchList.find(d => d.id === agentId);
 
@@ -103,7 +104,17 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   async function send(pid) {
     const amt = parseInt(amounts[pid], 10);
     if (!amt || amt <= 0 || !agentId) return;
-    await supabase.rpc('send_stock_to_agent', { p_agent_id: agentId, p_product_id: pid, p_amount: amt });
+    const product = products.find(p => p.id === pid);
+    if (!product || product.stock_quantity < amt) {
+      setErrors({ ...errors, [pid]: `Only ${product ? product.stock_quantity : 0} in central inventory — can't send ${amt}.` });
+      return;
+    }
+    setErrors({ ...errors, [pid]: null });
+    const { error } = await supabase.rpc('send_stock_to_agent', { p_agent_id: agentId, p_product_id: pid, p_amount: amt });
+    if (error) {
+      setErrors({ ...errors, [pid]: error.message });
+      return;
+    }
     setAmounts({ ...amounts, [pid]: '' });
     refresh();
   }
@@ -145,11 +156,12 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
       {agentId && (
         <>
           <table style={{ marginBottom: '20px' }}>
-            <thead><tr><th>Product</th><th>Agent currently holds</th><th>Send more</th></tr></thead>
+            <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Send more</th></tr></thead>
             <tbody>
               {products.map(p => (
                 <tr key={p.id}>
                   <td>{p.name}</td>
+                  <td><span className={'pill ' + (p.stock_quantity > 0 ? 'Delivered' : 'Cancelled')}>{p.stock_quantity} available</span></td>
                   <td><span className="pill Delivered">{stockFor(p.id)} units</span></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <input
@@ -159,6 +171,7 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
                       style={{ width: '80px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
                     />{' '}
                     <button className="link-btn" onClick={() => send(p.id)}>Send</button>
+                    {errors[p.id] && <div style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px', maxWidth: '200px' }}>{errors[p.id]}</div>}
                   </td>
                 </tr>
               ))}
@@ -287,6 +300,14 @@ export function ReportsPage({ orders, profiles, products, session }) {
   const [toDate, setToDate] = useState('');
   const [lastSeen, setLastSeen] = useState({});
   const [detailPerson, setDetailPerson] = useState(null);
+  const [movements, setMovements] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(60);
+      setMovements(data || []);
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -450,6 +471,39 @@ export function ReportsPage({ orders, profiles, products, session }) {
       <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
       <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
 
+      {products && products.length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>Inventory levels</h3>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>Product</th><th>Current stock</th></tr></thead>
+            <tbody>
+              {products.map(p => (
+                <tr key={p.id}><td>{p.name}</td><td><span className={'pill ' + (p.stock_quantity <= p.low_stock_threshold ? 'Cancelled' : 'Delivered')}>{p.stock_quantity} units</span></td></tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>Recent stock activity</h3>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>Date</th><th>Product</th><th>Change</th><th>Reason</th></tr></thead>
+            <tbody>
+              {movements.length === 0 && <tr><td colSpan="4" className="empty">No stock changes recorded yet.</td></tr>}
+              {movements.map(m => {
+                const prod = products.find(p => p.id === m.product_id);
+                return (
+                  <tr key={m.id}>
+                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</td>
+                    <td>{prod ? prod.name : '—'}</td>
+                    <td><span className={'pill ' + (m.delta >= 0 ? 'Delivered' : 'Cancelled')}>{m.delta >= 0 ? '+' : ''}{m.delta}</span></td>
+                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{m.reason || '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>By state</h3>
       <table>
         <thead><tr><th>State</th><th>Agents</th><th>Orders sent</th><th>Delivered</th></tr></thead>
@@ -473,7 +527,9 @@ export function ReportsPage({ orders, profiles, products, session }) {
   );
 }
 
-export function PersonDetailModal({ person, orders, lastSeenText, onClose }) {
+export function PersonDetailModal({ person, orders, lastSeenText, session, onChanged, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const isDispatch = person.role === 'dispatch';
   const handled = orders.filter(o => (isDispatch ? o.dispatch_id : o.staff_id) === person.id);
   const byStatus = {};
@@ -484,26 +540,64 @@ export function PersonDetailModal({ person, orders, lastSeenText, onClose }) {
     ? delivered.reduce((sum, o) => sum + (new Date(o.delivered_at) - new Date(o.created_at)) / 3600000, 0) / delivered.length
     : null;
 
+  async function toggleActive() {
+    setBusy(true);
+    await supabase.from('profiles').update({ active: !person.active }).eq('id', person.id);
+    setBusy(false);
+    if (onChanged) onChanged();
+  }
+
+  async function remove() {
+    if (!session) return;
+    setBusy(true);
+    await fetch('/api/delete-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userId: person.id }),
+    });
+    setBusy(false);
+    if (onChanged) onChanged();
+    onClose();
+  }
+
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>{person.full_name}</h3>
-        <p style={{ fontSize: '12.5px', color: '#8A93A0', marginTop: '-10px', marginBottom: '16px' }}>
-          {person.role === 'dispatch' ? 'Dispatch partner' : 'Staff'}{person.state ? ` · ${person.state}` : ''} ·
+        <p style={{ fontSize: '12.5px', color: '#8A93A0', marginTop: '-10px', marginBottom: '10px' }}>
+          {person.role === 'dispatch' ? 'Dispatch partner' : person.role}{person.state ? ` · ${person.state}` : ''} ·
           {' '}{person.active ? 'Receiving orders' : 'Not receiving orders'} · Last seen: {lastSeenText}
         </p>
+        <div className="list-manage" style={{ marginBottom: '16px' }}>
+          <div className="list-manage-row"><span>Email</span><span style={{ color: '#8A93A0' }}>{person.email || '—'}</span></div>
+          <div className="list-manage-row"><span>Username</span><span style={{ color: '#8A93A0' }}>{person.username ? '@' + person.username : '—'}</span></div>
+        </div>
         <div className="stats" style={{ marginBottom: '16px' }}>
           <div className="stat"><div className="stat-num">{handled.length}</div><div className="stat-label">Total handled</div></div>
           <div className="stat"><div className="stat-num">{delivered.length}</div><div className="stat-label">Delivered</div></div>
           <div className="stat"><div className="stat-num">{avgHours ? avgHours.toFixed(1) + 'h' : '—'}</div><div className="stat-label">Avg. turnaround</div></div>
           {isDispatch && <div className="stat"><div className="stat-num">₦{deliveryCharges.toLocaleString()}</div><div className="stat-label">Delivery charges collected</div></div>}
         </div>
-        <div className="list-manage">
+        <div className="list-manage" style={{ marginBottom: '16px' }}>
           {STATUSES.map(s => (
             <div key={s} className="list-manage-row"><span>{s}</span><span style={{ color: '#8A93A0' }}>{byStatus[s]}</span></div>
           ))}
         </div>
-        <div className="modal-actions"><button className="btn" onClick={onClose}>Close</button></div>
+        {confirmRemove ? (
+          <div className="banner" style={{ background: '#F3DEDC', borderColor: '#E7C3BF' }}>
+            <p style={{ margin: '0 0 10px 0' }}>Remove {person.full_name}'s login permanently? They won't be able to sign in again. This can't be undone.</p>
+            <button className="btn" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>{' '}
+            <button className="btn" style={{ background: '#B0483F', color: '#fff', borderColor: '#B0483F' }} onClick={remove} disabled={busy}>Yes, remove permanently</button>
+          </div>
+        ) : (
+          <div className="modal-actions" style={{ justifyContent: 'space-between' }}>
+            <button className="btn" style={{ color: '#B0483F' }} onClick={() => setConfirmRemove(true)} disabled={busy}>Remove login</button>
+            <div>
+              <button className="btn" onClick={toggleActive} disabled={busy} style={{ marginRight: '8px' }}>{person.active ? 'Deactivate' : 'Activate'}</button>
+              <button className="btn primary" onClick={onClose}>Close</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -641,6 +735,8 @@ function SubmitOrderForm({ profile, products, refresh }) {
 
   async function submit() {
     if (!customer.trim() || !productId) { setMsg('Fill in a customer name and product.'); return; }
+    const product = products.find(p => p.id === productId);
+    if (!product || product.stock_quantity <= 0) { setMsg('That product is out of stock — ask admin to restock before submitting.'); return; }
     const { data, error } = await supabase.from('orders').insert({
       product_id: productId, customer: customer.trim(), phone: phone.trim(), address: address.trim(),
       quantity: parseInt(quantity, 10) || 1, notes: notes.trim(), created_by: profile.id,
@@ -658,7 +754,7 @@ function SubmitOrderForm({ profile, products, refresh }) {
     <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '20px', maxWidth: '480px' }}>
       <label className="field-label" style={{ marginTop: 0 }}>Product</label>
       <select value={productId} onChange={e => setProductId(e.target.value)} style={{ width: '100%', marginBottom: '10px', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
-        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name}{(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
       </select>
       <label className="field-label">Customer name</label>
       <input value={customer} onChange={e => setCustomer(e.target.value)} style={{ width: '100%', marginBottom: '10px', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
@@ -763,18 +859,29 @@ export function ProductPackagesModal({ product, products, onClose }) {
 
 
 export function InventoryPage({ products, orders, refresh }) {
-  const [edits, setEdits] = useState({});
+  const [exactEdits, setExactEdits] = useState({});
+  const [addAmounts, setAddAmounts] = useState({});
 
-  async function adjust(p, delta) {
-    const next = Math.max(0, p.stock_quantity + delta);
-    await supabase.from('products').update({ stock_quantity: next }).eq('id', p.id);
+  async function addStock(p) {
+    const amt = parseInt(addAmounts[p.id], 10);
+    if (!amt || amt <= 0) return;
+    await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: amt });
+    setAddAmounts({ ...addAmounts, [p.id]: '' });
+    refresh();
+  }
+  async function subtractStock(p) {
+    const amt = parseInt(addAmounts[p.id], 10);
+    if (!amt || amt <= 0) return;
+    await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: -amt });
+    setAddAmounts({ ...addAmounts, [p.id]: '' });
     refresh();
   }
   async function setExact(p) {
-    const val = parseInt(edits[p.id], 10);
+    const val = parseInt(exactEdits[p.id], 10);
     if (isNaN(val)) return;
-    await supabase.from('products').update({ stock_quantity: Math.max(0, val) }).eq('id', p.id);
-    setEdits({ ...edits, [p.id]: '' });
+    const delta = Math.max(0, val) - p.stock_quantity;
+    if (delta !== 0) await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: delta });
+    setExactEdits({ ...exactEdits, [p.id]: '' });
     refresh();
   }
   async function setThreshold(p, val) {
@@ -787,10 +894,10 @@ export function InventoryPage({ products, orders, refresh }) {
   return (
     <div>
       <div className="topbar">
-        <div><h1 className="page-title">Inventory</h1><p className="page-sub">Stock automatically drops as orders come in.</p></div>
+        <div><h1 className="page-title">Inventory</h1><p className="page-sub">Stock automatically drops as orders come in. Any addition below adds to what's already there — use "Set exact" only when you want to replace the number entirely.</p></div>
       </div>
       <table>
-        <thead><tr><th>Product</th><th>In stock</th><th>Low stock alert below</th><th>Adjust</th></tr></thead>
+        <thead><tr><th>Product</th><th>In stock</th><th>Low stock alert below</th><th>Add / subtract quantity</th><th>Set exact</th></tr></thead>
         <tbody>
           {products.map(p => {
             const low = p.stock_quantity <= p.low_stock_threshold;
@@ -809,20 +916,28 @@ export function InventoryPage({ products, orders, refresh }) {
                   />
                 </td>
                 <td style={{ whiteSpace: 'nowrap' }}>
-                  <button className="btn" onClick={() => adjust(p, -1)}>−</button>{' '}
-                  <button className="btn" onClick={() => adjust(p, 1)}>+</button>{' '}
                   <input
-                    placeholder="set exact"
-                    value={edits[p.id] || ''}
-                    onChange={e => setEdits({ ...edits, [p.id]: e.target.value })}
+                    type="number" min="1" placeholder="qty"
+                    value={addAmounts[p.id] || ''}
+                    onChange={e => setAddAmounts({ ...addAmounts, [p.id]: e.target.value })}
                     style={{ width: '80px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                  />{' '}
+                  <button className="link-btn" onClick={() => addStock(p)}>Add</button>{' · '}
+                  <button className="link-btn" onClick={() => subtractStock(p)}>Subtract</button>
+                </td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <input
+                    placeholder="exact total"
+                    value={exactEdits[p.id] || ''}
+                    onChange={e => setExactEdits({ ...exactEdits, [p.id]: e.target.value })}
+                    style={{ width: '90px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
                   />{' '}
                   <button className="link-btn" onClick={() => setExact(p)}>Set</button>
                 </td>
               </tr>
             );
           })}
-          {products.length === 0 && <tr><td colSpan="4" className="empty">Add products first.</td></tr>}
+          {products.length === 0 && <tr><td colSpan="5" className="empty">Add products first.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -910,23 +1025,38 @@ export function CustomerHistoryModal({ phone, customer, orders, products, onClos
 export function NotificationsBell({ profile, isAdmin }) {
   const [open, setOpen] = useState(false);
   const [events, setEvents] = useState([]);
+  const [lowStock, setLowStock] = useState([]);
 
   useEffect(() => {
     (async () => {
       let query = supabase.from('order_events').select('*').order('created_at', { ascending: false }).limit(15);
       const { data } = await query;
       setEvents(data || []);
+      if (isAdmin) {
+        const { data: products } = await supabase.from('products').select('*');
+        setLowStock((products || []).filter(p => p.stock_quantity <= p.low_stock_threshold));
+      }
     })();
-  }, []);
+  }, [isAdmin]);
+
+  const alertCount = lowStock.length;
 
   return (
     <div style={{ position: 'relative' }}>
       <button className="switch-out" onClick={() => setOpen(!open)} style={{ marginBottom: '8px' }}>
-        🔔 Recent activity
+        🔔 Recent activity{alertCount > 0 ? ` (${alertCount} low stock)` : ''}
       </button>
       {open && (
-        <div style={{ position: 'absolute', bottom: '30px', left: 0, background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', width: '280px', maxHeight: '320px', overflowY: 'auto', padding: '10px', zIndex: 60, boxShadow: '0 10px 30px rgba(0,0,0,.15)' }}>
-          {events.length === 0 && <div style={{ fontSize: '12px', color: '#8A93A0', padding: '8px' }}>No recent activity.</div>}
+        <div style={{ position: 'absolute', bottom: '30px', left: 0, background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', width: '280px', maxHeight: '360px', overflowY: 'auto', padding: '10px', zIndex: 60, boxShadow: '0 10px 30px rgba(0,0,0,.15)' }}>
+          {isAdmin && lowStock.length > 0 && (
+            <div style={{ marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #DEDAD0' }}>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: '#B0483F', marginBottom: '4px' }}>⚠ Low stock</div>
+              {lowStock.map(p => (
+                <div key={p.id} style={{ fontSize: '12px', padding: '4px 2px' }}>{p.name} — only {p.stock_quantity} left</div>
+              ))}
+            </div>
+          )}
+          {events.length === 0 && lowStock.length === 0 && <div style={{ fontSize: '12px', color: '#8A93A0', padding: '8px' }}>No recent activity.</div>}
           {events.map(e => (
             <div key={e.id} style={{ fontSize: '12px', padding: '8px 4px', borderBottom: '1px solid #F0EEE8', color: '#1B2430' }}>
               <div style={{ color: '#8A93A0', fontSize: '10.5px' }}>{new Date(e.created_at).toLocaleString()}</div>
