@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -12,6 +12,7 @@ const APP_SECTIONS = [
   { key: 'team', label: 'Team' },
   { key: 'reports', label: 'Reports' },
   { key: 'settings', label: 'Settings' },
+  { key: 'commission', label: 'Commission' },
 ];
 
 export default function Dashboard() {
@@ -110,10 +111,12 @@ export default function Dashboard() {
     { key: 'agentstock', label: 'Agent stock' },
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
+    { key: 'commission', label: 'Commission' },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
     { key: 'dashboard', label: 'My orders', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
+    { key: 'commission', label: 'My Commission' },
   ] : profile.role === 'dispatch' ? [
     { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status === 'Dispatched').length },
     { key: 'mystock', label: 'My stock' },
@@ -160,9 +163,11 @@ export default function Dashboard() {
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} refresh={refreshAll} />}
+        {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} session={session} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
+        {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
 
         {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} latestRemarks={latestRemarks} profile={profile} refresh={refreshAll} />}
         {profile.role === 'dispatch' && page === 'mystock' && <MyStockPage profile={profile} agentStock={agentStock} products={products} />}
@@ -530,12 +535,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   async function markPaid(o) {
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed — marked as Paid.' });
+    await recordCommissionForOrder(o);
     refresh();
   }
 
   async function resetPaid(o) {
     await supabase.from('orders').update({ payment_status: 'Unpaid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Admin corrected payment status back to Unpaid — no payment was actually received.' });
+    await reverseCommissionForOrder(o.id);
     refresh();
   }
 
@@ -709,6 +716,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             }
             if (statusChanging.newStatus === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
             updateOrder(statusChanging.order.id, patch, null, remark);
+            if (paidNow) recordCommissionForOrder(statusChanging.order);
             setStatusChanging(null);
           }}
         />
@@ -847,6 +855,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
     if (status === 'Delivered' && paidNow) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment collected at delivery — marked as Paid.' });
+      await recordCommissionForOrder(o);
     }
     if (remark && remark.trim()) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
@@ -858,6 +867,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
   async function markPaid(o) {
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed by dispatch — marked as Paid.' });
+    await recordCommissionForOrder(o);
     refresh();
   }
 
@@ -953,6 +963,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
 function ProductsPage({ products, orders, packages, refresh }) {
   const [name, setName] = useState('');
   const [managingPackages, setManagingPackages] = useState(null);
+  const [managingCommission, setManagingCommission] = useState(null);
   async function add() {
     if (!name.trim()) return;
     await supabase.from('products').insert({ name: name.trim() });
@@ -974,6 +985,7 @@ function ProductsPage({ products, orders, packages, refresh }) {
               <span>{p.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}</span></span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <button className="link-btn" onClick={() => setManagingPackages(p)}>Manage packages</button>
+                <button className="link-btn" onClick={() => setManagingCommission(p)}>Commission</button>
                 <button className="tiny-x" onClick={() => remove(p.id)}>Remove</button>
               </div>
             </div>
@@ -986,6 +998,7 @@ function ProductsPage({ products, orders, packages, refresh }) {
         <button className="btn primary" onClick={add} style={{ flex: '0 0 auto' }}>Add product</button>
       </div>
       {managingPackages && <ProductPackagesModal product={managingPackages} products={products} onClose={() => { setManagingPackages(null); refresh(); }} />}
+      {managingCommission && <CommissionRuleModal product={managingCommission} onClose={() => setManagingCommission(null)} />}
     </div>
   );
 }

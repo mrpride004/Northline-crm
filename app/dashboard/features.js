@@ -22,6 +22,43 @@ export function showToast(message) {
 }
 
 
+export function getCycleStart(date) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0 = Sunday
+  d.setDate(d.getDate() - day);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+}
+
+export async function recordCommissionForOrder(order) {
+  if (!order.staff_id || !order.product_id) return;
+  const { data: rule } = await supabase.from('commission_rules').select('*').eq('product_id', order.product_id).maybeSingle();
+  if (!rule || !rule.active) return;
+  const base = (order.quantity || 1) * Number(order.unit_price || 0);
+  const cycleStart = getCycleStart(new Date());
+  const standardAmount = rule.standard_type === 'percentage' ? base * (rule.standard_value / 100) : rule.standard_value;
+  if (standardAmount > 0) {
+    await supabase.from('commission_ledger').insert({
+      order_id: order.id, staff_id: order.staff_id, product_id: order.product_id,
+      amount: standardAmount, commission_type: 'standard', cycle_start: cycleStart,
+    });
+  }
+  if (order.package_id) {
+    const upsellAmount = rule.upsell_type === 'percentage' ? base * (rule.upsell_value / 100) : rule.upsell_value;
+    if (upsellAmount > 0) {
+      await supabase.from('commission_ledger').insert({
+        order_id: order.id, staff_id: order.staff_id, product_id: order.product_id,
+        amount: upsellAmount, commission_type: 'upsell', cycle_start: cycleStart,
+      });
+    }
+  }
+}
+
+export async function reverseCommissionForOrder(orderId) {
+  await supabase.from('commission_ledger').update({ reversed: true }).eq('order_id', orderId).eq('reversed', false);
+}
+
+
 export async function copyToClipboard(text, label) {
   let ok = false;
   try {
@@ -839,6 +876,72 @@ function SubmitOrderForm({ profile, products, refresh }) {
 }
 
 // ---------- Product packages (multiple named gift bundles per product) ----------
+export function CommissionRuleModal({ product, onClose }) {
+  const [rule, setRule] = useState(null);
+  const [standardType, setStandardType] = useState('fixed');
+  const [standardValue, setStandardValue] = useState(0);
+  const [upsellType, setUpsellType] = useState('fixed');
+  const [upsellValue, setUpsellValue] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('commission_rules').select('*').eq('product_id', product.id).maybeSingle();
+    if (data) {
+      setRule(data);
+      setStandardType(data.standard_type); setStandardValue(data.standard_value);
+      setUpsellType(data.upsell_type); setUpsellValue(data.upsell_value);
+    }
+    setLoading(false);
+  }
+
+  async function save() {
+    const payload = {
+      product_id: product.id,
+      standard_type: standardType, standard_value: parseFloat(standardValue) || 0,
+      upsell_type: upsellType, upsell_value: parseFloat(upsellValue) || 0,
+      active: true,
+    };
+    await supabase.from('commission_rules').upsert(payload, { onConflict: 'product_id' });
+    onClose();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Commission · {product.name}</h3>
+        {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
+          <>
+            <label style={{ marginTop: 0 }}>Standard commission (earned on every Paid order, staff only)</label>
+            <div className="row2">
+              <select value={standardType} onChange={e => setStandardType(e.target.value)}>
+                <option value="fixed">Fixed ₦ amount</option>
+                <option value="percentage">% of order value</option>
+              </select>
+              <input type="number" min="0" value={standardValue} onChange={e => setStandardValue(e.target.value)} placeholder={standardType === 'fixed' ? 'e.g. 200' : 'e.g. 5'} />
+            </div>
+            <label>Upsell bonus (extra, only when the order used a package)</label>
+            <div className="row2">
+              <select value={upsellType} onChange={e => setUpsellType(e.target.value)}>
+                <option value="fixed">Fixed ₦ amount</option>
+                <option value="percentage">% of order value</option>
+              </select>
+              <input type="number" min="0" value={upsellValue} onChange={e => setUpsellValue(e.target.value)} placeholder={upsellType === 'fixed' ? 'e.g. 100' : 'e.g. 3'} />
+            </div>
+            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>
+              Both apply together on a Paid order that used a package — e.g. ₦200 standard + ₦100 upsell = ₦300 for that order.
+            </p>
+          </>
+        )}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ProductPackagesModal({ product, products, onClose }) {
   const [packages, setPackages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1139,3 +1242,201 @@ export function NotificationsBell({ profile, isAdmin }) {
 }
 
 export { STATUSES };
+
+// ---------- Commission: staff-facing gamified board ----------
+export function CommissionPage({ profile, orders, products, session }) {
+  const [ledger, setLedger] = useState([]);
+  const [claims, setClaims] = useState([]);
+  const [threshold, setThreshold] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [claiming, setClaiming] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const [{ data: led }, { data: cl }, { data: setting }] = await Promise.all([
+      supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
+      supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
+      supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
+    ]);
+    setLedger(led || []);
+    setClaims(cl || []);
+    setThreshold(setting ? parseFloat(setting.value) || 0 : 0);
+    setLoading(false);
+  }
+
+  const myOrders = orders.filter(o => o.staff_id === profile.id);
+  const myDelivered = myOrders.filter(o => o.status === 'Delivered');
+  const myDeliveredPaid = myDelivered.filter(o => o.payment_status === 'Paid');
+  const successRate = myDelivered.length > 0 ? (myDeliveredPaid.length / myDelivered.length) * 100 : 100;
+  const eligible = successRate >= threshold;
+  const isMonday = new Date().getDay() === 1;
+
+  const earned = ledger.filter(l => !l.reversed).reduce((sum, l) => sum + Number(l.amount), 0);
+  const claimed = claims.reduce((sum, c) => sum + Number(c.amount), 0);
+  const balance = earned - claimed;
+
+  const cycleStart = getCycleStart(new Date());
+  const thisWeek = ledger.filter(l => !l.reversed && l.cycle_start === cycleStart);
+  const thisWeekTotal = thisWeek.reduce((sum, l) => sum + Number(l.amount), 0);
+
+  const byProduct = {};
+  ledger.filter(l => !l.reversed).forEach(l => {
+    if (!byProduct[l.product_id]) byProduct[l.product_id] = { standard: 0, upsell: 0, count: 0 };
+    byProduct[l.product_id][l.commission_type] += Number(l.amount);
+    byProduct[l.product_id].count += 1;
+  });
+
+  async function claim() {
+    if (!isMonday || !eligible || balance <= 0) return;
+    setClaiming(true);
+    await supabase.from('commission_claims').insert({ staff_id: profile.id, amount: balance });
+    setClaiming(false);
+    setMsg(`🎉 Claimed ₦${balance.toLocaleString()}! Nice work this cycle.`);
+    load();
+  }
+
+  if (loading) return <div className="loading">Loading your commission…</div>;
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">My Commission</h1><p className="page-sub">Earned automatically every time one of your orders gets paid.</p></div>
+      </div>
+
+      <div style={{ background: 'linear-gradient(135deg, #1F4D44, #2E6E62)', borderRadius: '12px', padding: '28px', color: '#fff', marginBottom: '20px', textAlign: 'center' }}>
+        <div style={{ fontSize: '12.5px', opacity: 0.85, marginBottom: '6px', letterSpacing: '.5px' }}>YOUR UNCLAIMED BALANCE</div>
+        <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '42px', fontWeight: 700 }}>₦{balance.toLocaleString()}</div>
+        <div style={{ fontSize: '12.5px', opacity: 0.85, marginTop: '6px' }}>₦{thisWeekTotal.toLocaleString()} earned this week so far</div>
+        <div style={{ marginTop: '18px' }}>
+          {balance <= 0 ? (
+            <span style={{ fontSize: '12.5px', opacity: 0.75 }}>Deliver more Paid orders to start earning towards your next claim.</span>
+          ) : !eligible ? (
+            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>Keep your delivery success rate up to unlock claiming</span>
+          ) : !isMonday ? (
+            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens Monday</span>
+          ) : (
+            <button className="btn primary" onClick={claim} disabled={claiming} style={{ background: '#fff', color: '#1F4D44', fontWeight: 700, padding: '11px 28px', fontSize: '14px' }}>
+              {claiming ? 'Claiming…' : '🎉 Claim your commission now'}
+            </button>
+          )}
+        </div>
+        {msg && <p style={{ fontSize: '12.5px', marginTop: '12px' }}>{msg}</p>}
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Your delivery success rate</h3>
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '20px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '8px' }}>
+          <span>{successRate.toFixed(0)}% of your delivered orders got paid</span>
+          <span style={{ color: '#8A93A0' }}>Needs {threshold}% to claim</span>
+        </div>
+        <div style={{ background: '#F0EEE8', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
+          <div style={{ width: `${Math.min(100, successRate)}%`, height: '100%', background: eligible ? '#2E6E62' : '#C6862F', transition: 'width .3s ease' }} />
+        </div>
+        <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '8px' }}>{myDeliveredPaid.length} paid out of {myDelivered.length} delivered orders you're on.</p>
+      </div>
+
+      {Object.keys(byProduct).length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>How you earned it, by product</h3>
+          <table style={{ marginBottom: '20px' }}>
+            <thead><tr><th>Product</th><th>Orders</th><th>Standard</th><th>Upsell bonus</th><th>Total</th></tr></thead>
+            <tbody>
+              {Object.entries(byProduct).map(([pid, d]) => {
+                const prod = products.find(p => p.id === pid);
+                return (
+                  <tr key={pid}>
+                    <td>{prod ? prod.name : '—'}</td>
+                    <td>{d.count}</td>
+                    <td>₦{d.standard.toLocaleString()}</td>
+                    <td>₦{d.upsell.toLocaleString()}</td>
+                    <td>₦{(d.standard + d.upsell).toLocaleString()}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Claim history</h3>
+      <div className="list-manage">
+        {claims.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No claims yet — your first one is waiting for you above.</div>}
+        {claims.map(c => (
+          <div key={c.id} className="list-manage-row"><span>{new Date(c.claimed_at).toLocaleDateString()}</span><span style={{ color: '#2E6E62', fontWeight: 600 }}>₦{Number(c.amount).toLocaleString()}</span></div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Commission: admin overview ----------
+export function AdminCommissionPage({ profiles, orders, session }) {
+  const [threshold, setThreshold] = useState(0);
+  const [ledgerAll, setLedgerAll] = useState([]);
+  const [claimsAll, setClaimsAll] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const [{ data: setting }, { data: led }, { data: cl }] = await Promise.all([
+      supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
+      supabase.from('commission_ledger').select('*'),
+      supabase.from('commission_claims').select('*'),
+    ]);
+    setThreshold(setting ? parseFloat(setting.value) || 0 : 0);
+    setLedgerAll(led || []);
+    setClaimsAll(cl || []);
+  }
+
+  async function saveThreshold() {
+    setSaving(true);
+    await supabase.from('app_settings').upsert({ key: 'min_success_rate_to_claim', value: String(threshold) });
+    setSaving(false);
+  }
+
+  const staffList = profiles.filter(p => p.role === 'staff');
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Commission</h1><p className="page-sub">Set the claim eligibility rule and see where every staff member stands.</p></div></div>
+
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
+        <label className="field-label" style={{ marginTop: 0 }}>Minimum delivery success rate to claim (%)</label>
+        <div className="row2">
+          <input type="number" min="0" max="100" value={threshold} onChange={e => setThreshold(e.target.value)} style={{ padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+          <button className="btn primary" onClick={saveThreshold} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set to 0 to let everyone claim freely.</p>
+      </div>
+
+      <table>
+        <thead><tr><th>Staff</th><th>Unclaimed balance</th><th>Success rate</th><th>Eligible?</th><th>Last claim</th></tr></thead>
+        <tbody>
+          {staffList.length === 0 && <tr><td colSpan="5" className="empty">No staff added yet.</td></tr>}
+          {staffList.map(s => {
+            const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
+            const myClaims = claimsAll.filter(c => c.staff_id === s.id);
+            const earned = myLedger.reduce((sum, l) => sum + Number(l.amount), 0);
+            const claimed = myClaims.reduce((sum, c) => sum + Number(c.amount), 0);
+            const balance = earned - claimed;
+            const myOrders = orders.filter(o => o.staff_id === s.id);
+            const delivered = myOrders.filter(o => o.status === 'Delivered');
+            const deliveredPaid = delivered.filter(o => o.payment_status === 'Paid');
+            const rate = delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100;
+            const lastClaim = myClaims.sort((a, b) => new Date(b.claimed_at) - new Date(a.claimed_at))[0];
+            return (
+              <tr key={s.id}>
+                <td>{s.full_name}</td>
+                <td>₦{balance.toLocaleString()}</td>
+                <td>{rate.toFixed(0)}%</td>
+                <td><span className={'pill ' + (rate >= threshold ? 'Delivered' : 'Cancelled')}>{rate >= threshold ? 'Eligible' : 'Not yet'}</span></td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{lastClaim ? new Date(lastClaim.claimed_at).toLocaleDateString() : 'Never'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
