@@ -17,6 +17,8 @@ export default function Dashboard() {
   const [settings, setSettings] = useState({});
   const [dispatchCompanies, setDispatchCompanies] = useState([]);
   const [packages, setPackages] = useState([]);
+  const [latestRemarks, setLatestRemarks] = useState({});
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -31,7 +33,7 @@ export default function Dashboard() {
   }, []);
 
   async function refreshAll() {
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -39,6 +41,7 @@ export default function Dashboard() {
       supabase.from('app_settings').select('*'),
       supabase.from('dispatch_companies').select('*').eq('active', true),
       supabase.from('product_packages').select('*'),
+      supabase.from('order_events').select('*').eq('event_type', 'remark').order('created_at', { ascending: false }).limit(500),
     ]);
     setProducts(prod || []);
     setOrders(ord || []);
@@ -49,6 +52,11 @@ export default function Dashboard() {
     setSettings(settingsMap);
     setDispatchCompanies(companies || []);
     setPackages(pkgs || []);
+    const remarkMap = {};
+    (events || []).forEach(e => {
+      if (!remarkMap[e.order_id]) remarkMap[e.order_id] = e; // first hit per order = most recent, since already sorted desc
+    });
+    setLatestRemarks(remarkMap);
   }
 
   async function signOut() {
@@ -93,14 +101,15 @@ export default function Dashboard() {
 
   return (
     <div className="app">
-      <div className="sidebar">
+      <div className={'mobile-backdrop' + (mobileMenuOpen ? ' mobile-open' : '')} onClick={() => setMobileMenuOpen(false)} />
+      <div className={'sidebar' + (mobileMenuOpen ? ' mobile-open' : '')}>
         <div className="brand">
           <p className="brand-name">Northline</p>
           <div className="brand-role">{profile.full_name} · {roleLabel}</div>
         </div>
         <div className="nav">
           {navItems.map(n => (
-            <div key={n.key} className={'nav-item' + (page === n.key ? ' active' : '')} onClick={() => setPage(n.key)}>
+            <div key={n.key} className={'nav-item' + (page === n.key ? ' active' : '')} onClick={() => { setPage(n.key); setMobileMenuOpen(false); }}>
               <span>{n.label}</span>
               {n.count > 0 && <span className="nav-count">{n.count}</span>}
             </div>
@@ -113,8 +122,9 @@ export default function Dashboard() {
       </div>
 
       <div className="main">
+        <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
-        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} refresh={refreshAll} />}
+        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
@@ -122,10 +132,10 @@ export default function Dashboard() {
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} refresh={refreshAll} />}
 
-        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} refresh={refreshAll} />}
+        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
 
-        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} profile={profile} refresh={refreshAll} />}
+        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} latestRemarks={latestRemarks} profile={profile} refresh={refreshAll} />}
         {profile.role === 'dispatch' && page === 'mystock' && <MyStockPage profile={profile} agentStock={agentStock} products={products} />}
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
@@ -178,7 +188,7 @@ function AdminOverview({ orders, products, profiles }) {
   );
 }
 
-function OrderModal({ products, packages, order, onSave, onClose }) {
+function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
   const [productId, setProductId] = useState(order ? order.product_id : (products[0] ? products[0].id : ''));
   const [customer, setCustomer] = useState(order ? order.customer : '');
   const [phone, setPhone] = useState(order ? order.phone : '');
@@ -194,10 +204,13 @@ function OrderModal({ products, packages, order, onSave, onClose }) {
   const [packageId, setPackageId] = useState(order ? order.package_id || '' : '');
   const [giftQuantity, setGiftQuantity] = useState(order ? order.gift_quantity || 0 : 0);
   const [state, setState] = useState(order ? order.state || '' : '');
+  const [dispatchId, setDispatchId] = useState(order ? order.dispatch_id || '' : '');
 
   const productPackages = (packages || []).filter(p => p.product_id === productId);
   const selectedPackage = productPackages.find(p => p.id === packageId);
   const giftProduct = selectedPackage ? products.find(p => p.id === selectedPackage.gift_product_id) : null;
+  const dispatchInState = (profiles || []).filter(p => p.role === 'dispatch' && p.active && state && p.state === state);
+  const otherDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && (!state || p.state !== state));
 
   function onPackageChange(id) {
     setPackageId(id);
@@ -219,6 +232,7 @@ function OrderModal({ products, packages, order, onSave, onClose }) {
       package_id: giftProduct ? (packageId || null) : null,
       gift_quantity: giftProduct ? (parseInt(giftQuantity, 10) || 0) : 0,
       state: state || null,
+      dispatch_id: dispatchId || null,
     });
   }
 
@@ -270,6 +284,22 @@ function OrderModal({ products, packages, order, onSave, onClose }) {
           <option value="">— Select state —</option>
           {NIGERIA_STATES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
+        {profiles && (
+          <>
+            <label>Assign dispatch partner (optional)</label>
+            <select value={dispatchId} onChange={e => setDispatchId(e.target.value)}>
+              <option value="">— Unassigned —</option>
+              {dispatchInState.length > 0 && (
+                <optgroup label={`In ${state}`}>
+                  {dispatchInState.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
+                </optgroup>
+              )}
+              <optgroup label={dispatchInState.length > 0 ? 'Other states' : 'All dispatch partners'}>
+                {otherDispatch.map(d => <option key={d.id} value={d.id}>{d.full_name}{d.state ? ` · ${d.state}` : ''}</option>)}
+              </optgroup>
+            </select>
+          </>
+        )}
         <div className="row2">
           <div><label>Priority</label>
             <select value={priority} onChange={e => setPriority(e.target.value)}>
@@ -331,7 +361,7 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
-function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, refresh }) {
+function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
   const [search, setSearch] = useState('');
@@ -392,15 +422,24 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     refresh();
   }
 
-  async function deductStockForDelivery(o) {
+  async function adjustStockForOrder(o, direction) {
+    // direction: -1 to deduct (delivering), +1 to add back (reversing a delivered order)
+    const qtyDelta = direction * (o.quantity || 1);
     const product = products.find(p => p.id === o.product_id);
     if (product) {
-      await supabase.rpc('decrement_stock', { p_product_id: product.id, p_amount: o.quantity || 1 });
+      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: qtyDelta });
+      if (o.dispatch_id) {
+        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: qtyDelta });
+      }
     }
     if (o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
-        await supabase.rpc('decrement_stock', { p_product_id: pkg.gift_product_id, p_amount: o.gift_quantity });
+        const giftDelta = direction * o.gift_quantity;
+        await supabase.rpc('adjust_stock', { p_product_id: pkg.gift_product_id, p_delta: giftDelta });
+        if (o.dispatch_id) {
+          await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: pkg.gift_product_id, p_delta: giftDelta });
+        }
       }
     }
   }
@@ -409,11 +448,17 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     const current = orders.find(o => o.id === id);
     if (patch.status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
-      if (current && current.status !== 'Delivered') await deductStockForDelivery(current);
+      if (current && current.status !== 'Delivered') await adjustStockForOrder(current, -1);
+    }
+    if (patch.status === 'Cancelled' && current && current.status === 'Delivered') {
+      await adjustStockForOrder(current, 1);
     }
     await supabase.from('orders').update(patch).eq('id', id);
     if (patch.status && current && patch.status !== current.status) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
+      if (patch.status === 'Cancelled' && current.status === 'Delivered') {
+        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Order reversed from Delivered — stock added back to inventory.' });
+      }
     }
     if (remark && remark.trim()) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
@@ -504,6 +549,11 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   </div>
                   {o.status === 'Rescheduled' && o.reschedule_date && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>→ {o.reschedule_date}</div>}
                   {o.preferred_time && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⏰ {o.preferred_time}</div>}
+                  {latestRemarks && latestRemarks[o.id] && (
+                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>
+                      💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
+                    </div>
+                  )}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
@@ -526,8 +576,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         </table>
       )}
 
-      {showNew && <OrderModal products={products} packages={packages} onClose={() => setShowNew(false)} onSave={createOrder} />}
-      {editing && <OrderModal products={products} packages={packages} order={editing} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
+      {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} onClose={() => setShowNew(false)} onSave={createOrder} />}
+      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} order={editing} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
       {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
@@ -646,20 +696,32 @@ function DeliveryFeeCell({ order, onSave }) {
   );
 }
 
-function DispatchPage({ orders, products, packages, profile, refresh }) {
+function DispatchPage({ orders, products, packages, latestRemarks, profile, refresh }) {
   const [confirming, setConfirming] = useState(null);
   const [statusChanging, setStatusChanging] = useState(null);
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+  const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
+  const giftName = pkgId => {
+    const pkg = (packages || []).find(p => p.id === pkgId);
+    if (!pkg || !pkg.gift_product_id) return null;
+    return products.find(p => p.id === pkg.gift_product_id)?.name || null;
+  };
 
   async function deductStockForDelivery(o) {
     const product = products.find(p => p.id === o.product_id);
     if (product) {
-      await supabase.rpc('decrement_stock', { p_product_id: product.id, p_amount: o.quantity || 1 });
+      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: -(o.quantity || 1) });
+      if (o.dispatch_id) {
+        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: -(o.quantity || 1) });
+      }
     }
     if (o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
-        await supabase.rpc('decrement_stock', { p_product_id: pkg.gift_product_id, p_amount: o.gift_quantity });
+        await supabase.rpc('adjust_stock', { p_product_id: pkg.gift_product_id, p_delta: -o.gift_quantity });
+        if (o.dispatch_id) {
+          await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: pkg.gift_product_id, p_delta: -o.gift_quantity });
+        }
       }
     }
   }
@@ -699,18 +761,31 @@ function DispatchPage({ orders, products, packages, profile, refresh }) {
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
       {orders.length === 0 ? <div className="empty">No deliveries assigned to you yet.</div> : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Payment</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Payment</th><th></th></tr></thead>
           <tbody>
             {orders.map(o => (
               <tr key={o.id}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
-                <td>{prodName(o.product_id)}</td>
+                <td>
+                  {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
+                  {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
+                  {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
+                  {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
+                </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div></td>
-                <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
+                <td style={{ fontSize: '12px', maxWidth: '220px' }}>
+                  {o.address || '—'}
+                  {o.preferred_time && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⏰ {o.preferred_time}</div>}
+                </td>
                 <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
                 <td>
                   <span className={'pill ' + o.status}>{o.status}</span>
                   {o.status === 'Rescheduled' && o.reschedule_date && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>→ {o.reschedule_date}</div>}
+                  {latestRemarks && latestRemarks[o.id] && (
+                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '180px', fontStyle: 'italic' }}>
+                      💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
+                    </div>
+                  )}
                 </td>
                 <td>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
