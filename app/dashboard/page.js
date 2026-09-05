@@ -235,6 +235,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
   const [state, setState] = useState(order ? order.state || '' : '');
   const [dispatchId, setDispatchId] = useState(order ? order.dispatch_id || '' : '');
   const [stockError, setStockError] = useState('');
+  const productPackages = (packages || []).filter(p => p.product_id === productId);
   const selectedPackage = productPackages.find(p => p.id === packageId);
   const giftProduct = selectedPackage ? products.find(p => p.id === selectedPackage.gift_product_id) : null;
   const dispatchInState = (profiles || []).filter(p => p.role === 'dispatch' && p.active && state && p.state === state);
@@ -680,7 +681,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
       {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
-      {confirming && <ConfirmOrderModal order={confirming} profile={profile} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
+      {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
       {forwarding && (
         <ForwardModal

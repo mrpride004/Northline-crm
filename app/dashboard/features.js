@@ -254,17 +254,25 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
   );
 }
 
-export function ConfirmOrderModal({ order, profile, onClose, onConfirmed }) {
+export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirmed }) {
   const [priority, setPriority] = useState(order.priority || 'Normal');
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
   const [remark, setRemark] = useState('');
 
+  const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && order.state && p.state === order.state);
+  const willAutoAssign = !order.dispatch_id && matchingDispatch.length > 0;
+
   async function confirm() {
-    await supabase.from('orders').update({
+    const patch = {
       status: 'Confirmed', priority, preferred_time: preferredTime.trim(),
       confirmed_at: new Date().toISOString(), confirmed_by: profile?.id,
-    }).eq('id', order.id);
+    };
+    if (willAutoAssign) patch.dispatch_id = matchingDispatch[0].id;
+    await supabase.from('orders').update(patch).eq('id', order.id);
     await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
+    if (willAutoAssign) {
+      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${matchingDispatch[0].full_name} (${order.state}) on confirmation.` });
+    }
     if (remark.trim()) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
     }
@@ -284,6 +292,13 @@ export function ConfirmOrderModal({ order, profile, onClose, onConfirmed }) {
         <input value={preferredTime} onChange={e => setPreferredTime(e.target.value)} placeholder="e.g. After 5pm, or Saturday morning" />
         <label>Remark for dispatch (optional)</label>
         <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything dispatch should know before delivering" />
+        {order.dispatch_id ? (
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>Already assigned to a dispatch partner — confirming will notify them.</p>
+        ) : willAutoAssign ? (
+          <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>✓ Will automatically send to {matchingDispatch[0].full_name} in {order.state} on confirmation.</p>
+        ) : (
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {order.state || 'this order\'s state'} yet — admin will need to assign one manually.</p>
+        )}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={confirm}>Confirm order</button>
