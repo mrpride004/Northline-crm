@@ -540,12 +540,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function copyTrackingLink(orderId) {
-    await copyToClipboard(`${window.location.origin}/track/${orderId}`);
+    await copyToClipboard(`${window.location.origin}/track/${orderId}`, 'Tracking link copied');
     setActionsOpenFor(null);
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages));
+    await copyToClipboard(buildOrderSummary(o, products, packages), 'Order info copied');
     setActionsOpenFor(null);
   }
 
@@ -596,7 +596,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <div className="empty">No orders here yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Created</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Scheduled</th><th>Created</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
               <tr key={o.id}>
@@ -639,13 +639,16 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                     ) : <span className={'pill ' + o.status}>{o.status}</span>}
                     {o.priority === 'High' && <span className="pill Cancelled">High</span>}
                   </div>
-                  {o.status === 'Rescheduled' && o.reschedule_date && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>→ {o.reschedule_date}</div>}
-                  {o.preferred_time && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⏰ {o.preferred_time}</div>}
                   {latestRemarks && latestRemarks[o.id] && (
                     <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>
                       💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
                     </div>
                   )}
+                </td>
+                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {o.reschedule_date && <div>📅 {o.reschedule_date}</div>}
+                  {o.preferred_time && <div>⏰ {o.preferred_time}</div>}
+                  {!o.reschedule_date && !o.preferred_time && '—'}
                 </td>
                 <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
                   {new Date(o.created_at).toLocaleDateString()}<br />{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -698,9 +701,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <StatusRemarkModal
           order={statusChanging.order} newStatus={statusChanging.newStatus}
           onClose={() => setStatusChanging(null)}
-          onConfirm={({ remark, fee, rescheduleDate }) => {
+          onConfirm={({ remark, fee, rescheduleDate, paidNow }) => {
             const patch = { status: statusChanging.newStatus };
-            if (statusChanging.newStatus === 'Delivered') patch.delivery_fee = fee;
+            if (statusChanging.newStatus === 'Delivered') {
+              patch.delivery_fee = fee;
+              if (paidNow) patch.payment_status = 'Paid';
+            }
             if (statusChanging.newStatus === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
             updateOrder(statusChanging.order.id, patch, null, remark);
             setStatusChanging(null);
@@ -828,16 +834,20 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     }
   }
 
-  async function applyStatusChange(o, status, { remark, fee, rescheduleDate } = {}) {
+  async function applyStatusChange(o, status, { remark, fee, rescheduleDate, paidNow } = {}) {
     const patch = { status };
     if (status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
       patch.delivery_fee = fee ?? 0;
+      if (paidNow) patch.payment_status = 'Paid';
       await deductStockForDelivery(o);
     }
     if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
     await supabase.from('orders').update(patch).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
+    if (status === 'Delivered' && paidNow) {
+      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment collected at delivery — marked as Paid.' });
+    }
     if (remark && remark.trim()) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
     }
@@ -859,12 +869,17 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages));
+    await copyToClipboard(buildOrderSummary(o, products, packages), 'Order info copied');
   }
 
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
+      <div className="stats" style={{ marginBottom: '18px' }}>
+        <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'New').length}</div><div className="stat-label">New orders</div></div>
+        <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered</div></div>
+        <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
+      </div>
       <div className="product-tabs">
         <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All ({orders.length})</span>
         {STATUSES.map(s => {
@@ -875,7 +890,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
       </div>
       {filtered.length === 0 ? <div className="empty">No deliveries here yet.</div> : (
         <table>
-          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Payment</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
               <tr key={o.id}>
@@ -887,23 +902,26 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
                 </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div></td>
-                <td style={{ fontSize: '12px', maxWidth: '220px' }}>
-                  {o.address || '—'}
-                  {o.preferred_time && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⏰ {o.preferred_time}</div>}
-                </td>
+                <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
                 <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
                 <td>
                   <span className={'pill ' + o.status}>{o.status}</span>
-                  {o.status === 'Rescheduled' && o.reschedule_date && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>→ {o.reschedule_date}</div>}
                   {latestRemarks && latestRemarks[o.id] && (
                     <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '180px', fontStyle: 'italic' }}>
                       💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
                     </div>
                   )}
                 </td>
+                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {o.reschedule_date && <div>📅 {o.reschedule_date}</div>}
+                  {o.preferred_time && <div>⏰ {o.preferred_time}</div>}
+                  {!o.reschedule_date && !o.preferred_time && '—'}
+                </td>
+                </td>
                 <td>
-                  <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
-                  {o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                  <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
+                  {o.status === 'Delivered' && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                  {o.status !== 'Delivered' && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>Available after delivery</div>}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {o.status === 'New' && <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}

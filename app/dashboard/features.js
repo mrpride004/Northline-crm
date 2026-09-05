@@ -8,28 +8,47 @@ export async function logEvent({ order_id, actor_id, actor_name, event_type, fro
   await supabase.from('order_events').insert({ order_id, actor_id, actor_name, event_type, from_status, to_status, note });
 }
 
-export async function copyToClipboard(text) {
+export function showToast(message) {
+  if (typeof document === 'undefined') return;
+  const el = document.createElement('div');
+  el.textContent = message;
+  el.style.cssText = 'position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(0); background:#1F4D44; color:#fff; padding:11px 20px; border-radius:24px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.3); opacity:0; transition:opacity .18s ease, transform .18s ease;';
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(-50%) translateY(-6px)'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 200);
+  }, 1600);
+}
+
+
+export async function copyToClipboard(text, label) {
+  let ok = false;
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
-      return true;
+      ok = true;
     }
   } catch (e) { /* fall through to fallback */ }
-  try {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(textarea);
-    if (ok) return true;
-  } catch (e) { /* fall through */ }
-  // Last resort — show it so the person can copy manually.
-  window.prompt('Copy this:', text);
-  return false;
+  if (!ok) {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+    } catch (e) { /* fall through */ }
+  }
+  if (ok) {
+    showToast(`✓ ${label || 'Copied to clipboard'}`);
+  } else {
+    window.prompt('Copy this:', text);
+  }
+  return ok;
 }
 
 export function buildOrderSummary(order, products, packages) {
@@ -220,6 +239,7 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
   const [remark, setRemark] = useState('');
   const [fee, setFee] = useState(order.delivery_fee || '');
   const [rescheduleDate, setRescheduleDate] = useState(order.reschedule_date || '');
+  const [paidNow, setPaidNow] = useState(false);
   const isDelivering = newStatus === 'Delivered';
   const isRescheduling = newStatus === 'Rescheduled';
 
@@ -231,9 +251,12 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
           <>
             <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
             <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
-            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '4px' }}>
-              This is tracked separately from payment. Once delivered, use the "Mark Paid" button when payment
-              has actually been received.
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
+              <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
+              I've also collected payment for this order — mark it Paid too
+            </label>
+            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
+              Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
             </p>
           </>
         )}
@@ -247,7 +270,7 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
         <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!isDelivering && !isRescheduling} />
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate })}>Confirm</button>
+          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate, paidNow })}>Confirm</button>
         </div>
       </div>
     </div>
@@ -545,6 +568,9 @@ export function ReportsPage({ orders, profiles, products, session }) {
 export function PersonDetailModal({ person, orders, lastSeenText, session, onChanged, onClose }) {
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState('');
   const isDispatch = person.role === 'dispatch';
   const handled = orders.filter(o => (isDispatch ? o.dispatch_id : o.staff_id) === person.id);
   const byStatus = {};
@@ -560,6 +586,19 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
     await supabase.from('profiles').update({ active: !person.active }).eq('id', person.id);
     setBusy(false);
     if (onChanged) onChanged();
+  }
+
+  async function setPassword() {
+    if (!session || newPassword.length < 6) { setPasswordMsg('Password must be at least 6 characters.'); return; }
+    setBusy(true);
+    const res = await fetch('/api/set-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userId: person.id, newPassword }),
+    });
+    const body = await res.json();
+    setBusy(false);
+    setPasswordMsg(res.ok ? `Password updated — tell ${person.full_name.split(' ')[0]} their new password: ${newPassword}` : (body.error || 'Something went wrong.'));
   }
 
   async function remove() {
@@ -598,6 +637,18 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
             <div key={s} className="list-manage-row"><span>{s}</span><span style={{ color: '#8A93A0' }}>{byStatus[s]}</span></div>
           ))}
         </div>
+
+        {!showPassword ? (
+          <button className="link-btn" onClick={() => setShowPassword(true)} style={{ marginBottom: '16px', display: 'block' }}>Set a new password for this person</button>
+        ) : (
+          <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
+            <label className="field-label" style={{ marginTop: 0 }}>New password (at least 6 characters)</label>
+            <input value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Type a new password" style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '8px' }} />
+            <button className="btn primary" onClick={setPassword} disabled={busy}>Set password</button>
+            {passwordMsg && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '8px' }}>{passwordMsg}</p>}
+          </div>
+        )}
+
         {confirmRemove ? (
           <div className="banner" style={{ background: '#F3DEDC', borderColor: '#E7C3BF' }}>
             <p style={{ margin: '0 0 10px 0' }}>Remove {person.full_name}'s login permanently? They won't be able to sign in again. This can't be undone.</p>
