@@ -21,7 +21,7 @@ export async function POST(request) {
     return NextResponse.json({ error: 'Only admins can create logins.' }, { status: 403 });
   }
 
-  const { full_name, email, password, role, state, allowed_products, username } = await request.json();
+  const { full_name, email, password, role, state, allowed_products, allowed_sections, username } = await request.json();
   if (!full_name || !email || !password || !['staff', 'dispatch', 'manager', 'logistics', 'marketer', 'inventory'].includes(role)) {
     return NextResponse.json({ error: 'Missing or invalid fields.' }, { status: 400 });
   }
@@ -40,6 +40,7 @@ export async function POST(request) {
     state: state || null,
     active: true,
     allowed_products: allowed_products && allowed_products.length > 0 ? allowed_products : null,
+    allowed_sections: allowed_sections && allowed_sections.length > 0 ? allowed_sections : null,
     username: username ? username.trim().toLowerCase() : null,
   });
   if (profileErr) {

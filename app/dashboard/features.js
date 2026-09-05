@@ -8,6 +8,51 @@ export async function logEvent({ order_id, actor_id, actor_name, event_type, fro
   await supabase.from('order_events').insert({ order_id, actor_id, actor_name, event_type, from_status, to_status, note });
 }
 
+export async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through to fallback */ }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    if (ok) return true;
+  } catch (e) { /* fall through */ }
+  // Last resort — show it so the person can copy manually.
+  window.prompt('Copy this:', text);
+  return false;
+}
+
+export function buildOrderSummary(order, products, packages) {
+  const product = (products || []).find(p => p.id === order.product_id);
+  const pkg = order.package_id ? (packages || []).find(p => p.id === order.package_id) : null;
+  const gift = pkg && pkg.gift_product_id ? (products || []).find(p => p.id === pkg.gift_product_id) : null;
+  const lines = [
+    `Order: ${order.id}`,
+    `Created: ${new Date(order.created_at).toLocaleString()}`,
+    `Customer: ${order.customer} (${order.phone || 'no phone'})`,
+    `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
+    `Product: ${product ? product.name : '—'} × ${order.quantity || 1}`,
+    pkg ? `Package: ${pkg.name}` : null,
+    gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
+    `Status: ${order.status}`,
+    `Payment: ${order.payment_status || 'Unpaid'}`,
+    order.priority === 'High' ? 'Priority: HIGH' : null,
+    order.preferred_time ? `Preferred time: ${order.preferred_time}` : null,
+    order.notes ? `Notes: ${order.notes}` : null,
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 export function orderTotal(o) {
   const qty = o.quantity || 1;
   const unit = Number(o.unit_price || 0);
@@ -45,6 +90,8 @@ export const NIGERIA_STATES = [
 export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   const [agentId, setAgentId] = useState('');
   const [amounts, setAmounts] = useState({});
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const dispatchList = profiles.filter(p => p.role === 'dispatch');
   const selected = dispatchList.find(d => d.id === agentId);
 
@@ -56,17 +103,34 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   async function send(pid) {
     const amt = parseInt(amounts[pid], 10);
     if (!amt || amt <= 0 || !agentId) return;
-    const existing = agentStock.find(a => a.agent_id === agentId && a.product_id === pid);
-    const newQty = (existing ? existing.quantity : 0) + amt;
-    await supabase.from('agent_stock').upsert({ agent_id: agentId, product_id: pid, quantity: newQty, updated_at: new Date().toISOString() }, { onConflict: 'agent_id,product_id' });
+    await supabase.rpc('send_stock_to_agent', { p_agent_id: agentId, p_product_id: pid, p_amount: amt });
     setAmounts({ ...amounts, [pid]: '' });
     refresh();
+  }
+
+  async function exportMovements() {
+    if (!agentId) return;
+    let query = supabase.from('stock_movements').select('*').eq('agent_id', agentId).order('created_at', { ascending: false });
+    if (fromDate) query = query.gte('created_at', fromDate);
+    if (toDate) query = query.lte('created_at', toDate + 'T23:59:59');
+    const { data } = await query;
+    const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+    const headers = ['Date', 'Product', 'Change', 'Reason'];
+    const rows = (data || []).map(m => [new Date(m.created_at).toLocaleString(), prodName(m.product_id), m.delta, m.reason || '']);
+    const csv = [headers, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `agent-stock-${(selected?.full_name || 'agent').replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
     <div>
       <div className="topbar">
-        <div><h1 className="page-title">Agent stock</h1><p className="page-sub">Send stock to a dispatch agent and see what they're currently holding.</p></div>
+        <div><h1 className="page-title">Agent stock</h1><p className="page-sub">Send stock to a dispatch agent — this pulls it from central inventory. See what they're currently holding.</p></div>
       </div>
       <div style={{ marginBottom: '18px', maxWidth: '360px' }}>
         <label className="field-label">Select agent</label>
@@ -79,26 +143,38 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
       {!agentId && <div className="empty">Choose an agent above to view and send stock.</div>}
 
       {agentId && (
-        <table>
-          <thead><tr><th>Product</th><th>Agent currently holds</th><th>Send more</th></tr></thead>
-          <tbody>
-            {products.map(p => (
-              <tr key={p.id}>
-                <td>{p.name}</td>
-                <td><span className="pill Delivered">{stockFor(p.id)} units</span></td>
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  <input
-                    type="number" min="1" placeholder="qty"
-                    value={amounts[p.id] || ''}
-                    onChange={e => setAmounts({ ...amounts, [p.id]: e.target.value })}
-                    style={{ width: '80px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
-                  />{' '}
-                  <button className="link-btn" onClick={() => send(p.id)}>Send</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table style={{ marginBottom: '20px' }}>
+            <thead><tr><th>Product</th><th>Agent currently holds</th><th>Send more</th></tr></thead>
+            <tbody>
+              {products.map(p => (
+                <tr key={p.id}>
+                  <td>{p.name}</td>
+                  <td><span className="pill Delivered">{stockFor(p.id)} units</span></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <input
+                      type="number" min="1" placeholder="qty"
+                      value={amounts[p.id] || ''}
+                      onChange={e => setAmounts({ ...amounts, [p.id]: e.target.value })}
+                      style={{ width: '80px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                    />{' '}
+                    <button className="link-btn" onClick={() => send(p.id)}>Send</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', maxWidth: '460px' }}>
+            <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '15px', marginTop: 0, marginBottom: '10px' }}>Download stock history for {selected?.full_name}</h3>
+            <div className="row2" style={{ marginBottom: '10px' }}>
+              <div><label className="field-label" style={{ marginTop: 0 }}>From (optional)</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+              <div><label className="field-label" style={{ marginTop: 0 }}>To (optional)</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+            </div>
+            <p style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '10px' }}>Leave both blank for the full history. Use the same date for both to get a single day.</p>
+            <button className="btn primary" onClick={exportMovements} style={{ width: '100%' }}>⬇ Download CSV</button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -205,8 +281,10 @@ export function ConfirmOrderModal({ order, profile, onClose, onConfirmed }) {
 }
 
 
-export function ReportsPage({ orders, profiles, session }) {
+export function ReportsPage({ orders, profiles, products, session }) {
   const [range, setRange] = useState('today');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [lastSeen, setLastSeen] = useState({});
   const [detailPerson, setDetailPerson] = useState(null);
 
@@ -234,6 +312,11 @@ export function ReportsPage({ orders, profiles, session }) {
     if (range === 'today') return created.toDateString() === now.toDateString();
     if (range === '7d') return now - created <= 7 * 24 * 60 * 60 * 1000;
     if (range === '30d') return now - created <= 30 * 24 * 60 * 60 * 1000;
+    if (range === 'custom') {
+      if (fromDate && created < new Date(fromDate)) return false;
+      if (toDate && created > new Date(toDate + 'T23:59:59')) return false;
+      return true;
+    }
     return true;
   }
 
@@ -319,7 +402,14 @@ export function ReportsPage({ orders, profiles, session }) {
         <span className={'ptab' + (range === '7d' ? ' active' : '')} onClick={() => setRange('7d')}>Last 7 days</span>
         <span className={'ptab' + (range === '30d' ? ' active' : '')} onClick={() => setRange('30d')}>Last 30 days</span>
         <span className={'ptab' + (range === 'all' ? ' active' : '')} onClick={() => setRange('all')}>All time</span>
+        <span className={'ptab' + (range === 'custom' ? ' active' : '')} onClick={() => setRange('custom')}>Custom range</span>
       </div>
+      {range === 'custom' && (
+        <div className="row2" style={{ maxWidth: '420px', marginBottom: '16px' }}>
+          <div><label className="field-label" style={{ marginTop: 0 }}>From</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+          <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+        </div>
+      )}
       <div className="stats">
         <div className="stat"><div className="stat-num">{scoped.length}</div><div className="stat-label">Orders</div></div>
         <div className="stat"><div className="stat-num">{delivered.length}</div><div className="stat-label">Delivered</div></div>
@@ -332,6 +422,30 @@ export function ReportsPage({ orders, profiles, session }) {
         <div className="stat"><div className="stat-num">₦{totalDeliveryCharges.toLocaleString()}</div><div className="stat-label">Total delivery charges (delivered orders)</div></div>
       </div>
       <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '18px' }}>Delivery charges are entered by dispatch when they mark an order delivered, and are already subtracted from the revenue figure above.</p>
+
+      {products && products.length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By product</h3>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>Product</th><th>Orders</th><th>Delivered</th><th>Revenue</th></tr></thead>
+            <tbody>
+              {products.map(p => {
+                const prodOrders = scoped.filter(o => o.product_id === p.id);
+                const prodDelivered = prodOrders.filter(o => o.status === 'Delivered');
+                const prodRevenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o), 0);
+                return (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td>{prodOrders.length}</td>
+                    <td>{prodDelivered.length}</td>
+                    <td>₦{prodRevenue.toLocaleString()}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
 
       <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
       <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
@@ -359,7 +473,7 @@ export function ReportsPage({ orders, profiles, session }) {
   );
 }
 
-function PersonDetailModal({ person, orders, lastSeenText, onClose }) {
+export function PersonDetailModal({ person, orders, lastSeenText, onClose }) {
   const isDispatch = person.role === 'dispatch';
   const handled = orders.filter(o => (isDispatch ? o.dispatch_id : o.staff_id) === person.id);
   const byStatus = {};

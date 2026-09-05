@@ -2,7 +2,17 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal } from './features';
+
+const APP_SECTIONS = [
+  { key: 'orders', label: 'All orders' },
+  { key: 'products', label: 'Products' },
+  { key: 'inventory', label: 'Inventory' },
+  { key: 'agentstock', label: 'Agent stock' },
+  { key: 'team', label: 'Team' },
+  { key: 'reports', label: 'Reports' },
+  { key: 'settings', label: 'Settings' },
+];
 
 export default function Dashboard() {
   const router = useRouter();
@@ -19,6 +29,7 @@ export default function Dashboard() {
   const [packages, setPackages] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [lastSeen, setLastSeen] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -28,6 +39,20 @@ export default function Dashboard() {
       const { data: p } = await supabase.from('profiles').select('*').eq('id', s.user.id).single();
       setProfile(p);
       await refreshAll();
+      if (p && p.role === 'admin') {
+        try {
+          const res = await fetch('/api/team-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.access_token}` },
+          });
+          const body = await res.json();
+          if (res.ok) {
+            const map = {};
+            body.statuses.forEach(st => { map[st.id] = st.last_sign_in_at; });
+            setLastSeen(map);
+          }
+        } catch (e) { console.error('last-seen fetch failed', e); }
+      }
       setLoading(false);
     })();
   }, []);
@@ -99,6 +124,10 @@ export default function Dashboard() {
     { key: 'dashboard', label: 'Submit orders' },
   ];
 
+  const finalNavItems = (profile.allowed_sections && profile.allowed_sections.length > 0)
+    ? navItems.filter(n => !APP_SECTIONS.some(s => s.key === n.key) || profile.allowed_sections.includes(n.key))
+    : navItems;
+
   return (
     <div className="app">
       <div className={'mobile-backdrop' + (mobileMenuOpen ? ' mobile-open' : '')} onClick={() => setMobileMenuOpen(false)} />
@@ -108,7 +137,7 @@ export default function Dashboard() {
           <div className="brand-role">{profile.full_name} · {roleLabel}</div>
         </div>
         <div className="nav">
-          {navItems.map(n => (
+          {finalNavItems.map(n => (
             <div key={n.key} className={'nav-item' + (page === n.key ? ' active' : '')} onClick={() => { setPage(n.key); setMobileMenuOpen(false); }}>
               <span>{n.label}</span>
               {n.count > 0 && <span className="nav-count">{n.count}</span>}
@@ -124,12 +153,12 @@ export default function Dashboard() {
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
-        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
+        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
-        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} refresh={refreshAll} />}
-        {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} session={session} />}
+        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
+        {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} refresh={refreshAll} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
@@ -361,9 +390,11 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
-function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, refresh }) {
+function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, lastSeen, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
+  const [statusTab, setStatusTab] = useState('all');
+  const [submittedOnly, setSubmittedOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -373,26 +404,46 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [confirming, setConfirming] = useState(null);
   const [forwarding, setForwarding] = useState(null);
   const [statusChanging, setStatusChanging] = useState(null);
+  const [viewingPerson, setViewingPerson] = useState(null);
+  const [actionsOpenFor, setActionsOpenFor] = useState(null);
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
   const byState = activeState === 'all' ? byProduct : byProduct.filter(o => o.state === activeState);
+  const byStatus = statusTab === 'all' ? byState : byState.filter(o => o.status === statusTab);
+  const bySubmitted = submittedOnly ? byStatus.filter(o => o.created_by) : byStatus;
   const filtered = search.trim()
-    ? byState.filter(o => {
+    ? bySubmitted.filter(o => {
         const q = search.trim().toLowerCase();
         return o.id.toLowerCase().includes(q) || (o.customer || '').toLowerCase().includes(q) || (o.phone || '').toLowerCase().includes(q);
       })
-    : byState;
+    : bySubmitted;
   const usedStates = [...new Set(orders.map(o => o.state).filter(Boolean))].sort();
+  const staffSubmittedCount = orders.filter(o => o.created_by).length;
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
-  const staffName = id => (profiles.find(s => s.id === id) || {}).full_name || '—';
+  const personName = id => (profiles.find(s => s.id === id) || {}).full_name || '—';
+  const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
+  const giftName = pkgId => {
+    const pkg = (packages || []).find(p => p.id === pkgId);
+    if (!pkg || !pkg.gift_product_id) return null;
+    return products.find(p => p.id === pkg.gift_product_id)?.name || null;
+  };
+  function timeAgo(iso) {
+    if (!iso) return 'Never';
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
 
   function exportCSV() {
-    const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Created At', 'Delivered At'];
+    const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Delivered At'];
     const rows = filtered.map(o => [
       o.id, prodName(o.product_id), o.customer, o.phone, o.state || '', (o.address || '').replace(/\n/g, ' '),
       o.quantity || 1, o.unit_price ?? '', o.delivery_fee ?? 0, o.payment_status || '', o.status,
-      o.priority || '', o.preferred_time || '', staffName(o.staff_id), staffName(o.dispatch_id),
-      o.created_at, o.delivered_at || '',
+      o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
+      o.created_by ? personName(o.created_by) : '', o.created_at, o.delivered_at || '',
     ]);
     const csv = [headers, ...rows].map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -423,7 +474,6 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function adjustStockForOrder(o, direction) {
-    // direction: -1 to deduct (delivering), +1 to add back (reversing a delivered order)
     const qtyDelta = direction * (o.quantity || 1);
     const product = products.find(p => p.id === o.product_id);
     if (product) {
@@ -475,11 +525,20 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     refresh();
   }
 
+  async function resetPaid(o) {
+    await supabase.from('orders').update({ payment_status: 'Unpaid' }).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Admin corrected payment status back to Unpaid — no payment was actually received.' });
+    refresh();
+  }
+
   async function copyTrackingLink(orderId) {
-    const link = `${window.location.origin}/track/${orderId}`;
-    try {
-      await navigator.clipboard.writeText(link);
-    } catch (e) { console.error('Copy failed', e); }
+    await copyToClipboard(`${window.location.origin}/track/${orderId}`);
+    setActionsOpenFor(null);
+  }
+
+  async function copyOrderInfo(o) {
+    await copyToClipboard(buildOrderSummary(o, products, packages));
+    setActionsOpenFor(null);
   }
 
   return (
@@ -489,12 +548,17 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           <h1 className="page-title">{title || 'All orders'}</h1>
           <p className="page-sub">{filtered.length} order{filtered.length !== 1 ? 's' : ''}{activeProduct !== 'all' ? ' · ' + prodName(activeProduct) : ''}{activeState !== 'all' ? ' · ' + activeState : ''}</p>
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           {isAdmin && usedStates.length > 0 && (
             <select className="status-sel" value={activeState} onChange={e => setActiveState(e.target.value)}>
               <option value="all">All states</option>
               {usedStates.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
+          )}
+          {isAdmin && staffSubmittedCount > 0 && (
+            <button className={'btn' + (submittedOnly ? ' primary' : '')} onClick={() => setSubmittedOnly(!submittedOnly)}>
+              Staff submissions ({staffSubmittedCount})
+            </button>
           )}
           {isAdmin && filtered.length > 0 && <button className="btn" onClick={exportCSV}>⬇ Export backup (CSV)</button>}
           {(isAdmin || myRole === 'staff') && <button className="btn primary" onClick={() => setShowNew(true)}>+ New order</button>}
@@ -509,6 +573,11 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         />
       </div>
 
+      <div className="product-tabs">
+        <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All statuses</span>
+        {STATUSES.map(s => <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s}</span>)}
+      </div>
+
       {products.length > 0 &&
         <div className="product-tabs">
           <span className={'ptab' + (activeProduct === 'all' ? ' active' : '')} onClick={() => setActiveProduct('all')}>All products</span>
@@ -519,12 +588,21 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <div className="empty">No orders here yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Created</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
               <tr key={o.id}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
-                <td>{prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span></td>
+                <td>
+                  {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
+                  {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
+                  {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
+                  {o.created_by && (
+                    <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>
+                      ✎ Submitted by {personName(o.created_by)}
+                    </div>
+                  )}
+                </td>
                 <td>
                   <span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span>
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}{o.state ? ` · ${o.state}` : ''}</div>
@@ -533,16 +611,17 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
                   {isAdmin && <div style={{ color: '#8A93A0', marginTop: '3px' }}>₦{orderTotal(o).toLocaleString()}</div>}
                   {isAdmin && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                  {isAdmin && o.payment_status === 'Paid' && <div><button className="link-btn" onClick={() => resetPaid(o)} style={{ fontSize: '11px' }}>Reset to Unpaid</button></div>}
                 </td>
                 <td style={{ fontSize: '12px' }}>
-                  {o.staff_id ? staffName(o.staff_id) : <span style={{ color: '#B0483F' }}>Unassigned staff</span>}
-                  {o.dispatch_id ? <div style={{ color: '#8A93A0' }}>{staffName(o.dispatch_id)}</div> : null}
+                  {o.staff_id ? <span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.staff_id))}>{personName(o.staff_id)}</span> : <span style={{ color: '#B0483F' }}>Unassigned staff</span>}
+                  {o.dispatch_id ? <div style={{ color: '#8A93A0' }}><span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.dispatch_id))}>{personName(o.dispatch_id)}</span></div> : null}
                 </td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {isAdmin || (myRole === 'staff' && o.staff_id === myId) ? (
                       <select className="status-sel" value={o.status} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
-                        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                        {STATUSES.filter(s => s !== 'New' || o.status === 'New').map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     ) : <span className={'pill ' + o.status}>{o.status}</span>}
                     {o.priority === 'High' && <span className="pill Cancelled">High</span>}
@@ -555,20 +634,28 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                     </div>
                   )}
                 </td>
-                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {new Date(o.created_at).toLocaleDateString()}<br />{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
-                  <button className="link-btn" onClick={() => setHistoryOrder(o)}>History</button>{' · '}
-                  <button className="link-btn" onClick={() => copyTrackingLink(o.id)}>Copy tracking link</button>{' · '}
-                  {isAdmin && o.phone && <>
-                    <button className="link-btn" onClick={() => sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: true })}>Send confirmation</button>{' · '}
-                  </>}
-                  {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && <>
-                    <button className="link-btn" onClick={() => setForwarding(o)}>Forward</button>{' · '}
-                  </>}
-                  {isAdmin && <>
-                    <button className="link-btn" onClick={() => setAssigning(o)}>Assign</button>{' · '}
-                  </>}
-                  {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && <button className="link-btn" onClick={() => setEditing(o)}>Edit</button>}
+                  {isAdmin && <button className="link-btn" onClick={() => setAssigning(o)}>Assign / Send to dispatch</button>}
+                  {' · '}
+                  {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
+                  <button className="link-btn" onClick={() => setActionsOpenFor(actionsOpenFor === o.id ? null : o.id)}>More ▾</button>
+                  {actionsOpenFor === o.id && (
+                    <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '6px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', zIndex: 30, textAlign: 'left', minWidth: '190px', padding: '6px' }}>
+                      <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setHistoryOrder(o); setActionsOpenFor(null); }}>History</div>
+                      <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyTrackingLink(o.id)}>Copy tracking link</div>
+                      <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
+                      {isAdmin && o.phone && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
+                      )}
+                      {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
+                      )}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -582,6 +669,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} onClose={() => setViewingPerson(null)} />}
       {forwarding && (
         <ForwardModal
           order={forwarding} products={products} companies={dispatchCompanies || []}
@@ -697,8 +785,8 @@ function DeliveryFeeCell({ order, onSave }) {
 }
 
 function DispatchPage({ orders, products, packages, latestRemarks, profile, refresh }) {
-  const [confirming, setConfirming] = useState(null);
   const [statusChanging, setStatusChanging] = useState(null);
+  const [statusTab, setStatusTab] = useState('all');
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
   const giftName = pkgId => {
@@ -706,6 +794,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     if (!pkg || !pkg.gift_product_id) return null;
     return products.find(p => p.id === pkg.gift_product_id)?.name || null;
   };
+  const filtered = statusTab === 'all' ? orders : orders.filter(o => o.status === statusTab);
 
   async function deductStockForDelivery(o) {
     const product = products.find(p => p.id === o.product_id);
@@ -756,14 +845,26 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     refresh();
   }
 
+  async function copyOrderInfo(o) {
+    await copyToClipboard(buildOrderSummary(o, products, packages));
+  }
+
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
-      {orders.length === 0 ? <div className="empty">No deliveries assigned to you yet.</div> : (
+      <div className="product-tabs">
+        <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All ({orders.length})</span>
+        {STATUSES.map(s => {
+          const count = orders.filter(o => o.status === s).length;
+          if (count === 0) return null;
+          return <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s} ({count})</span>;
+        })}
+      </div>
+      {filtered.length === 0 ? <div className="empty">No deliveries here yet.</div> : (
         <table>
           <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Payment</th><th></th></tr></thead>
           <tbody>
-            {orders.map(o => (
+            {filtered.map(o => (
               <tr key={o.id}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
@@ -792,13 +893,14 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                   {o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
+                  {o.status === 'New' && <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}
                   {o.status !== 'Delivered' && o.status !== 'Cancelled' && o.status !== 'New' && <>
                     <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>{' '}
                     <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Dispatched' })}>In Transit</button>{' '}
                     <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>{' '}
                     <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>{' '}
                     <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Cancelled' })}>Cancel</button>
+                    <div style={{ marginTop: '6px' }}><button className="link-btn" onClick={() => copyOrderInfo(o)}>Copy full order info</button></div>
                   </>}
                 </td>
               </tr>
@@ -806,7 +908,6 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
           </tbody>
         </table>
       )}
-      {confirming && <ConfirmOrderModal order={confirming} profile={profile} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {statusChanging && (
         <StatusRemarkModal
           order={statusChanging.order} newStatus={statusChanging.newStatus}
@@ -858,7 +959,7 @@ function ProductsPage({ products, orders, packages, refresh }) {
   );
 }
 
-function TeamPage({ profiles, orders, products, session, refresh }) {
+function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -866,13 +967,24 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
   const [role, setRole] = useState('staff');
   const [state, setState] = useState('');
   const [allowedProducts, setAllowedProducts] = useState([]);
+  const [allowedSections, setAllowedSections] = useState([]);
   const [status, setStatus] = useState('');
   const [editingAccess, setEditingAccess] = useState(null);
+  const [viewingPerson, setViewingPerson] = useState(null);
   const staffList = profiles.filter(p => p.role !== 'admin');
   const isSubmitterRole = ['manager', 'logistics', 'marketer'].includes(role);
 
-  function toggleProduct(id, list, setList) {
+  function toggleIn(id, list, setList) {
     setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+  }
+  function timeAgo(iso) {
+    if (!iso) return 'Never';
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
   }
 
   async function createLogin() {
@@ -888,13 +1000,14 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
         full_name: name.trim(), email: email.trim(), password, role,
         state: role === 'dispatch' ? state : null,
         allowed_products: isSubmitterRole ? allowedProducts : null,
+        allowed_sections: allowedSections.length > 0 ? allowedSections : null,
         username: username.trim() || null,
       }),
     });
     const body = await res.json();
     if (!res.ok) { setStatus(body.error || 'Something went wrong.'); return; }
     setStatus(`Login created for ${name.trim()}.`);
-    setName(''); setUsername(''); setEmail(''); setPassword(''); setState(''); setAllowedProducts([]);
+    setName(''); setUsername(''); setEmail(''); setPassword(''); setState(''); setAllowedProducts([]); setAllowedSections([]);
     refresh();
   }
 
@@ -903,8 +1016,8 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
     refresh();
   }
 
-  async function saveAccess(id, list) {
-    await supabase.from('profiles').update({ allowed_products: list }).eq('id', id);
+  async function saveAccess(id, productList, sectionList) {
+    await supabase.from('profiles').update({ allowed_products: productList, allowed_sections: sectionList.length > 0 ? sectionList : null }).eq('id', id);
     setEditingAccess(null);
     refresh();
   }
@@ -916,14 +1029,15 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
       <div className="list-manage" style={{ marginBottom: '18px' }}>
         {staffList.map(s => {
           const load = orders.filter(o => (s.role === 'staff' ? o.staff_id : s.role === 'dispatch' ? o.dispatch_id : o.created_by) === s.id).length;
-          const submitter = ['manager', 'logistics', 'marketer'].includes(s.role);
           return (
             <div key={s.id} className="list-manage-row">
-              <span>{s.full_name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>({s.role}{s.state ? ` · ${s.state}` : ''}{s.username ? ` · @${s.username}` : ''}) · {load} orders</span>
+              <span>
+                <span className="link-btn" onClick={() => setViewingPerson(s)}>{s.full_name}</span>
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>({s.role}{s.state ? ` · ${s.state}` : ''}{s.username ? ` · @${s.username}` : ''}) · {load} orders · last seen {timeAgo(lastSeen && lastSeen[s.id])}</span>
                 {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Not receiving orders</span>}
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
-                {submitter && <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit product access</button>}
+                <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit access</button>
                 <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
               </div>
             </div>
@@ -966,7 +1080,7 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
               {products.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>Add products first.</p>}
               {products.map(p => (
                 <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
-                  <input type="checkbox" checked={allowedProducts.includes(p.id)} onChange={() => toggleProduct(p.id, allowedProducts, setAllowedProducts)} />
+                  <input type="checkbox" checked={allowedProducts.includes(p.id)} onChange={() => toggleIn(p.id, allowedProducts, setAllowedProducts)} />
                   {p.name}
                 </label>
               ))}
@@ -974,6 +1088,16 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
             <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-8px', marginBottom: '12px' }}>Leave all unchecked to give access to every product.</p>
           </>
         )}
+        <label className="field-label">Extra section access (optional)</label>
+        <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto', marginBottom: '6px' }}>
+          {APP_SECTIONS.map(sec => (
+            <label key={sec.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+              <input type="checkbox" checked={allowedSections.includes(sec.key)} onChange={() => toggleIn(sec.key, allowedSections, setAllowedSections)} />
+              {sec.label}
+            </label>
+          ))}
+        </div>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-2px', marginBottom: '12px' }}>Leave unchecked for their role's normal default access. Check boxes here to give this person extra sections beyond their role (e.g. letting a staff member also see Reports).</p>
         <button className="btn primary" onClick={createLogin} style={{ width: '100%' }}>Create login</button>
         {status && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{status}</p>}
       </div>
@@ -983,28 +1107,47 @@ function TeamPage({ profiles, orders, products, session, refresh }) {
           <EditAccessModal person={editingAccess} products={products} onClose={() => setEditingAccess(null)} onSave={saveAccess} />
         </div>
       )}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} onClose={() => setViewingPerson(null)} />}
     </div>
   );
 }
 
 function EditAccessModal({ person, products, onClose, onSave }) {
-  const [list, setList] = useState(person.allowed_products || []);
-  function toggle(id) { setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]); }
+  const [productList, setProductList] = useState(person.allowed_products || []);
+  const [sectionList, setSectionList] = useState(person.allowed_sections || []);
+  const isSubmitter = ['manager', 'logistics', 'marketer'].includes(person.role);
+  function toggleProduct(id) { setProductList(productList.includes(id) ? productList.filter(x => x !== id) : [...productList, id]); }
+  function toggleSection(key) { setSectionList(sectionList.includes(key) ? sectionList.filter(x => x !== key) : [...sectionList, key]); }
   return (
     <div className="modal" onClick={e => e.stopPropagation()}>
-      <h3>Product access · {person.full_name}</h3>
-      <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto' }}>
-        {products.map(p => (
-          <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
-            <input type="checkbox" checked={list.includes(p.id)} onChange={() => toggle(p.id)} />
-            {p.name}
+      <h3>Access · {person.full_name}</h3>
+      {isSubmitter && (
+        <>
+          <label style={{ marginTop: 0 }}>Product access</label>
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+            {products.map(p => (
+              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
+                <input type="checkbox" checked={productList.includes(p.id)} onChange={() => toggleProduct(p.id)} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to give access to every product.</p>
+        </>
+      )}
+      <label style={{ marginTop: isSubmitter ? '14px' : 0 }}>Extra section access</label>
+      <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+        {APP_SECTIONS.map(sec => (
+          <label key={sec.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
+            <input type="checkbox" checked={sectionList.includes(sec.key)} onChange={() => toggleSection(sec.key)} />
+            {sec.label}
           </label>
         ))}
       </div>
-      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Leave all unchecked to give access to every product.</p>
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave unchecked for their role's normal default access.</p>
       <div className="modal-actions">
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={() => onSave(person.id, list)}>Save access</button>
+        <button className="btn primary" onClick={() => onSave(person.id, productList, sectionList)}>Save access</button>
       </div>
     </div>
   );
