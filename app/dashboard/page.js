@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -15,6 +15,8 @@ const APP_SECTIONS = [
   { key: 'commission', label: 'Commission' },
   { key: 'upsellrules', label: 'Upsell Rules' },
   { key: 'corrections', label: 'Corrections' },
+  { key: 'upsells', label: 'Upsells' },
+  { key: 'suspicious', label: 'Suspicious Activity' },
 ];
 
 export default function Dashboard() {
@@ -115,7 +117,9 @@ export default function Dashboard() {
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
     { key: 'upsellrules', label: 'Upsell Rules' },
+    { key: 'upsells', label: 'Upsells' },
     { key: 'corrections', label: 'Corrections' },
+    { key: 'suspicious', label: 'Suspicious Activity' },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
     { key: 'dashboard', label: 'My orders', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
@@ -170,6 +174,8 @@ export default function Dashboard() {
         {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
         {isAdmin && page === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} />}
         {isAdmin && page === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={refreshAll} />}
+        {isAdmin && page === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
+        {isAdmin && page === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}

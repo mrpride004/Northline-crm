@@ -1921,6 +1921,7 @@ export function UpsellRulesPage({ products, packages }) {
         <div><h1 className="page-title">Upsell Commission Rules</h1><p className="page-sub">Fully dynamic — works with any product or package you list, now or in the future.</p></div>
         <button className="btn primary" onClick={() => setEditing({})}>+ New rule</button>
       </div>
+      <CommissionRuleTester products={products} packages={packages} />
       {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
         <table>
           <thead><tr><th>Original</th><th>Upsell</th><th>Commission</th><th>Active</th><th>Effective</th><th></th></tr></thead>
@@ -2030,6 +2031,241 @@ function UpsellRuleModal({ rule, products, packages, onClose }) {
           <button className="btn primary" onClick={save}>Save rule</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------- Phase 2: rule testing tool, upsells oversight, suspicious activity ----------
+
+export function UpsellsPage({ products, packages, profiles }) {
+  const [upsells, setUpsells] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [cancelReason, setCancelReason] = useState({});
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('upsells').select('*').order('created_at', { ascending: false });
+    setUpsells(data || []);
+    setLoading(false);
+  }
+  const prodName = id => id ? (products.find(p => p.id === id) || {}).name || '—' : '—';
+  const staffName = id => (profiles.find(p => p.id === id) || {}).full_name || '—';
+
+  async function cancel(u) {
+    const reason = cancelReason[u.id] || 'No reason given';
+    await supabase.rpc('cancel_upsell', { p_upsell_id: u.id, p_reason: reason });
+    load();
+  }
+
+  if (loading) return <div className="loading">Loading upsells…</div>;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Upsells</h1><p className="page-sub">Every genuine upsell, created only through the dedicated Add Upsell flow — never by editing an original order.</p></div></div>
+      <table>
+        <thead><tr><th>Order</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {upsells.length === 0 && <tr><td colSpan="7" className="empty">No upsells created yet.</td></tr>}
+          {upsells.map(u => (
+            <tr key={u.id}>
+              <td className="oid">{u.original_order_id.slice(0, 8)}</td>
+              <td>{staffName(u.staff_id)}</td>
+              <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
+              <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
+              <td>₦{Number(u.commission_amount).toLocaleString()}</td>
+              <td><span className={'pill ' + (u.commission_status === 'Paid' || u.commission_status === 'Eligible' || u.commission_status === 'Approved' ? 'Delivered' : u.commission_status === 'Rejected' || u.commission_status === 'Reversed' ? 'Cancelled' : 'New')}>{u.commission_status}</span></td>
+              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                {!['Rejected', 'Reversed'].includes(u.commission_status) && (
+                  <>
+                    <input
+                      placeholder="reason"
+                      value={cancelReason[u.id] || ''}
+                      onChange={e => setCancelReason({ ...cancelReason, [u.id]: e.target.value })}
+                      style={{ width: '90px', fontSize: '11px', padding: '4px 6px', border: '1px solid #DEDAD0', borderRadius: '4px', marginRight: '6px' }}
+                    />
+                    <button className="link-btn" style={{ color: '#B0483F' }} onClick={() => cancel(u)}>Cancel</button>
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function CommissionRuleTester({ products, packages }) {
+  const [originalProductId, setOriginalProductId] = useState('');
+  const [originalPackageId, setOriginalPackageId] = useState('');
+  const [upsellProductId, setUpsellProductId] = useState('');
+  const [upsellPackageId, setUpsellPackageId] = useState('');
+  const [quantity, setQuantity] = useState(1);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [result, setResult] = useState(null);
+  const [tested, setTested] = useState(false);
+
+  const originalPackages = originalProductId ? packages.filter(p => p.product_id === originalProductId) : [];
+  const upsellPackages = upsellProductId ? packages.filter(p => p.product_id === upsellProductId) : [];
+  const prodName = id => id ? (products.find(p => p.id === id) || {}).name || '—' : 'Any';
+  const pkgName = id => id ? (packages.find(p => p.id === id) || {}).name || '—' : 'Any';
+
+  async function runTest() {
+    const { data, error } = await supabase.rpc('test_upsell_commission', {
+      p_original_product_id: originalProductId || null,
+      p_original_package_id: originalPackageId || null,
+      p_upsell_product_id: upsellProductId || null,
+      p_upsell_package_id: upsellPackageId || null,
+      p_additional_quantity: parseInt(quantity, 10) || 1,
+      p_unit_price: parseFloat(unitPrice) || 0,
+    });
+    setTested(true);
+    setResult(error ? null : (data && data[0]) || null);
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', marginBottom: '24px', maxWidth: '520px' }}>
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginTop: 0, marginBottom: '10px' }}>Test a commission rule</h3>
+      <p style={{ fontSize: '12px', color: '#8A93A0', marginBottom: '12px' }}>Try a hypothetical upsell before staff ever see it — nothing here is saved.</p>
+      <label className="field-label" style={{ marginTop: 0 }}>Original product</label>
+      <select value={originalProductId} onChange={e => { setOriginalProductId(e.target.value); setOriginalPackageId(''); }} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}>
+        <option value="">Any product</option>
+        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      {originalPackages.length > 0 && (
+        <>
+          <label className="field-label">Original package</label>
+          <select value={originalPackageId} onChange={e => setOriginalPackageId(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}>
+            <option value="">Any package</option>
+            {originalPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </>
+      )}
+      <label className="field-label">Upsell product</label>
+      <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); }} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}>
+        <option value="">Any product</option>
+        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      {upsellPackages.length > 0 && (
+        <>
+          <label className="field-label">Upsell package</label>
+          <select value={upsellPackageId} onChange={e => setUpsellPackageId(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}>
+            <option value="">Any package</option>
+            {upsellPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </>
+      )}
+      <div className="row2" style={{ marginBottom: '10px' }}>
+        <div><label className="field-label" style={{ marginTop: 0 }}>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+        <div><label className="field-label" style={{ marginTop: 0 }}>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+      </div>
+      <button className="btn primary" onClick={runTest} style={{ width: '100%', marginBottom: '12px' }}>Run test</button>
+      {tested && (
+        result ? (
+          <div className="banner">
+            <div><strong>Matched rule:</strong> {prodName(originalProductId)} · {pkgName(originalPackageId)} → {prodName(upsellProductId)} · {pkgName(upsellPackageId)}</div>
+            <div><strong>Commission type:</strong> {result.commission_type} ({result.commission_value})</div>
+            <div><strong>Specificity score:</strong> {result.specificity} (higher = more specific match, wins over general rules)</div>
+            <div><strong>Calculated commission:</strong> ₦{Number(result.calculated_commission).toLocaleString()}</div>
+          </div>
+        ) : (
+          <div className="banner" style={{ background: '#F3DEDC', color: '#B0483F', borderColor: '#E7C3BF' }}>
+            No matching rule found — this combination would earn ₦0 right now.
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+export function SuspiciousActivityPage({ profiles, orders }) {
+  const [flags, setFlags] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const [{ data: corrections }, { data: upsells }] = await Promise.all([
+      supabase.from('order_corrections').select('*'),
+      supabase.from('upsells').select('*'),
+    ]);
+    setFlags(computeFlags(corrections || [], upsells || []));
+    setLoading(false);
+  }
+
+  function computeFlags(corrections, upsells) {
+    const staffList = profiles.filter(p => p.role === 'staff');
+    const out = [];
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    // Frequent correction requests per staff
+    staffList.forEach(s => {
+      const recent = corrections.filter(c => c.requested_by === s.id && new Date(c.created_at) > thirtyDaysAgo);
+      if (recent.length >= 3) {
+        out.push({ severity: 'High', staff: s.full_name, issue: `${recent.length} correction requests in the last 30 days`, type: 'Frequent corrections' });
+      }
+    });
+
+    // Multiple corrections on the same order
+    const byOrder = {};
+    corrections.forEach(c => { byOrder[c.order_id] = (byOrder[c.order_id] || 0) + 1; });
+    Object.entries(byOrder).forEach(([orderId, count]) => {
+      if (count >= 2) {
+        out.push({ severity: 'Medium', staff: '—', issue: `Order ${orderId.slice(0, 8)} has ${count} correction requests`, type: 'Repeated corrections on one order' });
+      }
+    });
+
+    // Upsell created shortly after a correction on the same order
+    upsells.forEach(u => {
+      const relatedCorrections = corrections.filter(c => c.order_id === u.original_order_id);
+      relatedCorrections.forEach(c => {
+        const diffMinutes = Math.abs(new Date(u.created_at) - new Date(c.created_at)) / 60000;
+        if (diffMinutes < 30) {
+          out.push({ severity: 'High', staff: staffList.find(s => s.id === u.staff_id)?.full_name || '—', issue: `Upsell created within ${Math.round(diffMinutes)} min of a correction on order ${u.original_order_id.slice(0, 8)}`, type: 'Upsell right after correction' });
+        }
+      });
+    });
+
+    // Unusually high upsell activity vs total orders handled
+    staffList.forEach(s => {
+      const myOrders = orders.filter(o => o.staff_id === s.id);
+      const myUpsells = upsells.filter(u => u.staff_id === s.id);
+      if (myOrders.length >= 5 && myUpsells.length / myOrders.length > 0.6) {
+        out.push({ severity: 'Medium', staff: s.full_name, issue: `${myUpsells.length} upsells across only ${myOrders.length} orders (${Math.round((myUpsells.length / myOrders.length) * 100)}%)`, type: 'High upsell ratio' });
+      }
+    });
+
+    // Commission calculated but the upsold item was never actually delivered
+    upsells.forEach(u => {
+      if (['Eligible', 'Approved', 'Paid'].includes(u.commission_status) && u.delivery_status !== 'Delivered') {
+        out.push({ severity: 'High', staff: staffList.find(s => s.id === u.staff_id)?.full_name || '—', issue: `Commission active on upsell for order ${u.original_order_id.slice(0, 8)} but delivery status is "${u.delivery_status}"`, type: 'Commission without delivery' });
+      }
+    });
+
+    return out.sort((a, b) => (a.severity === 'High' ? 0 : 1) - (b.severity === 'High' ? 0 : 1));
+  }
+
+  if (loading) return <div className="loading">Scanning for suspicious activity…</div>;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Suspicious Activity</h1><p className="page-sub">Automatically flagged patterns worth a closer look — nothing here is blocked automatically, it's for your review.</p></div></div>
+      {flags.length === 0 ? (
+        <div className="empty">Nothing flagged right now — everything looks normal.</div>
+      ) : (
+        <table>
+          <thead><tr><th>Severity</th><th>Type</th><th>Staff</th><th>Detail</th></tr></thead>
+          <tbody>
+            {flags.map((f, i) => (
+              <tr key={i}>
+                <td><span className={'pill ' + (f.severity === 'High' ? 'Cancelled' : 'Preparing')}>{f.severity}</span></td>
+                <td>{f.type}</td>
+                <td>{f.staff}</td>
+                <td style={{ fontSize: '12.5px' }}>{f.issue}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
