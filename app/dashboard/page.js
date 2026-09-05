@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -157,12 +157,12 @@ export default function Dashboard() {
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
-        {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} refresh={refreshAll} />}
+        {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
-        {isAdmin && page === 'settings' && <SettingsPage settings={settings} refresh={refreshAll} />}
+        {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} session={session} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
@@ -226,6 +226,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
   const [productId, setProductId] = useState(order ? order.product_id : (products[0] ? products[0].id : ''));
   const [customer, setCustomer] = useState(order ? order.customer : '');
   const [phone, setPhone] = useState(order ? order.phone : '');
+  const [phone2, setPhone2] = useState(order ? order.phone2 || '' : '');
   const [address, setAddress] = useState(order ? order.address : '');
   const [notes, setNotes] = useState(order ? order.notes : '');
   const [quantity, setQuantity] = useState(order ? order.quantity || 1 : 1);
@@ -263,7 +264,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
       }
     }
     onSave({
-      product_id: productId, customer: customer.trim(), phone: phone.trim(), address: address.trim(), notes: notes.trim(),
+      product_id: productId, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
       quantity: parseInt(quantity, 10) || 1,
       unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
       delivery_fee: parseFloat(deliveryFee) || 0,
@@ -296,8 +297,10 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
         )}
         <label>Customer name</label>
         <input value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Full name" />
-        <label>Phone</label>
-        <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="080..." />
+        <div className="row2">
+          <div><label>Phone</label><input value={phone} onChange={e => setPhone(e.target.value)} placeholder="080..." /></div>
+          <div><label>Alternate phone (optional)</label><input value={phone2} onChange={e => setPhone2(e.target.value)} placeholder="080..." /></div>
+        </div>
         <div className="row2">
           <div><label>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} /></div>
           <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} placeholder="0" /></div>
@@ -419,13 +422,17 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [statusChanging, setStatusChanging] = useState(null);
   const [viewingPerson, setViewingPerson] = useState(null);
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
+  const [todayOnly, setTodayOnly] = useState(false);
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
   const byState = activeState === 'all' ? byProduct : byProduct.filter(o => o.state === activeState);
   const byStatus = statusTab === 'all' ? byState : byState.filter(o => o.status === statusTab);
   const bySubmitted = submittedOnly ? byStatus.filter(o => o.created_by) : byStatus;
+  const todayStr = new Date().toDateString();
+  const isToday = o => new Date(o.created_at).toDateString() === todayStr || (o.reschedule_date && new Date(o.reschedule_date).toDateString() === todayStr);
+  const byToday = todayOnly ? bySubmitted.filter(isToday) : bySubmitted;
   const filtered = search.trim()
-    ? bySubmitted.filter(o => {
+    ? byToday.filter(o => {
         const q = search.trim().toLowerCase();
         return o.id.toLowerCase().includes(q) || (o.customer || '').toLowerCase().includes(q) || (o.phone || '').toLowerCase().includes(q);
       })
@@ -451,12 +458,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   function exportCSV() {
-    const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Delivered At'];
+    const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Last Status Update', 'Delivered At'];
     const rows = filtered.map(o => [
-      o.id, prodName(o.product_id), o.customer, o.phone, o.state || '', (o.address || '').replace(/\n/g, ' '),
+      o.id, prodName(o.product_id), o.customer, o.phone, o.phone2 || '', o.state || '', (o.address || '').replace(/\n/g, ' '),
       o.quantity || 1, o.unit_price ?? '', o.delivery_fee ?? 0, o.payment_status || '', o.status,
       o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
-      o.created_by ? personName(o.created_by) : '', o.created_at, o.delivered_at || '',
+      o.created_by ? personName(o.created_by) : '', o.created_at, o.status_updated_at || '', o.delivered_at || '',
     ]);
     const csv = [headers, ...rows].map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -509,6 +516,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
   async function updateOrder(id, patch, meta, remark) {
     const current = orders.find(o => o.id === id);
+    if (patch.status && current && patch.status !== current.status) {
+      patch.status_updated_at = new Date().toISOString();
+    }
     if (patch.status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
       if (current && current.status !== 'Delivered') await adjustStockForOrder(current, -1);
@@ -590,7 +600,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
       <div className="product-tabs">
         <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All statuses</span>
-        {STATUSES.map(s => <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s}</span>)}
+        {STATUSES.map(s => {
+          const count = byState.filter(o => o.status === s).length;
+          const showCount = s !== 'Delivered' && s !== 'Cancelled';
+          return <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s}{showCount ? ` (${count})` : ''}</span>;
+        })}
+        <span className={'ptab' + (todayOnly ? ' active' : '')} onClick={() => setTodayOnly(!todayOnly)}>📅 Today only</span>
       </div>
 
       {products.length > 0 &&
@@ -603,10 +618,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <div className="empty">No orders here yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Scheduled</th><th>Created</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Scheduled</th><th>Created</th><th>Last updated</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
-              <tr key={o.id}>
+              <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
                   {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
@@ -621,6 +636,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td>
                   <span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span>
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}{o.state ? ` · ${o.state}` : ''}</div>
+                  {o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
@@ -660,8 +676,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
                   {new Date(o.created_at).toLocaleDateString()}<br />{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </td>
+                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {o.status_updated_at ? (
+                    <>{new Date(o.status_updated_at).toLocaleDateString()}<br />{new Date(o.status_updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+                  ) : '—'}
+                </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
+                  {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && <><button className="link-btn" onClick={() => setConfirming(o)}>Reconfirm</button>{' · '}</>}
                   {isAdmin && <button className="link-btn" onClick={() => setAssigning(o)}>Assign / Send to dispatch</button>}
                   {' · '}
                   {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
@@ -814,6 +836,7 @@ function DeliveryFeeCell({ order, onSave }) {
 function DispatchPage({ orders, products, packages, latestRemarks, profile, refresh }) {
   const [statusChanging, setStatusChanging] = useState(null);
   const [statusTab, setStatusTab] = useState('all');
+  const [todayOnly, setTodayOnly] = useState(false);
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
   const giftName = pkgId => {
@@ -821,7 +844,10 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     if (!pkg || !pkg.gift_product_id) return null;
     return products.find(p => p.id === pkg.gift_product_id)?.name || null;
   };
-  const filtered = statusTab === 'all' ? orders : orders.filter(o => o.status === statusTab);
+  const todayStr = new Date().toDateString();
+  const isToday = o => new Date(o.created_at).toDateString() === todayStr || (o.reschedule_date && new Date(o.reschedule_date).toDateString() === todayStr);
+  const byStatus = statusTab === 'all' ? orders : orders.filter(o => o.status === statusTab);
+  const filtered = todayOnly ? byStatus.filter(isToday) : byStatus;
 
   async function deductStockForDelivery(o) {
     const product = products.find(p => p.id === o.product_id);
@@ -843,7 +869,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
   }
 
   async function applyStatusChange(o, status, { remark, fee, rescheduleDate, paidNow } = {}) {
-    const patch = { status };
+    const patch = { status, status_updated_at: new Date().toISOString() };
     if (status === 'Delivered') {
       patch.delivered_at = new Date().toISOString();
       patch.delivery_fee = fee ?? 0;
@@ -891,19 +917,21 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
         <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
       </div>
       <div className="product-tabs">
-        <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All ({orders.length})</span>
+        <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All</span>
         {STATUSES.map(s => {
           const count = orders.filter(o => o.status === s).length;
           if (count === 0) return null;
-          return <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s} ({count})</span>;
+          const showCount = s !== 'Delivered' && s !== 'Cancelled';
+          return <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s}{showCount ? ` (${count})` : ''}</span>;
         })}
+        <span className={'ptab' + (todayOnly ? ' active' : '')} onClick={() => setTodayOnly(!todayOnly)}>📅 Today only</span>
       </div>
       {filtered.length === 0 ? <div className="empty">No deliveries here yet.</div> : (
         <table>
-          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th>Last updated</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
-              <tr key={o.id}>
+              <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
                   {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
@@ -911,7 +939,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                   {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
                 </td>
-                <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div></td>
+                <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
                 <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
                 <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
                 <td>
@@ -931,6 +959,9 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
                   {o.status === 'Delivered' && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
                   {o.status !== 'Delivered' && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>Available after delivery</div>}
+                </td>
+                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {o.status_updated_at ? new Date(o.status_updated_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {o.status === 'New' && <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}
@@ -959,7 +990,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
   );
 }
 
-function ProductsPage({ products, orders, packages, refresh }) {
+function ProductsPage({ products, orders, packages, profiles, refresh }) {
   const [name, setName] = useState('');
   const [managingPackages, setManagingPackages] = useState(null);
   const [managingCommission, setManagingCommission] = useState(null);
@@ -984,7 +1015,7 @@ function ProductsPage({ products, orders, packages, refresh }) {
               <span>{p.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}</span></span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <button className="link-btn" onClick={() => setManagingPackages(p)}>Manage packages</button>
-                <button className="link-btn" onClick={() => setManagingCommission(p)}>Commission</button>
+                <button className="link-btn" onClick={() => setManagingCommission(p)}>Standard & upsell commission</button>
                 <button className="tiny-x" onClick={() => remove(p.id)}>Remove</button>
               </div>
             </div>
@@ -997,7 +1028,7 @@ function ProductsPage({ products, orders, packages, refresh }) {
         <button className="btn primary" onClick={add} style={{ flex: '0 0 auto' }}>Add product</button>
       </div>
       {managingPackages && <ProductPackagesModal product={managingPackages} products={products} onClose={() => { setManagingPackages(null); refresh(); }} />}
-      {managingCommission && <CommissionRuleModal product={managingCommission} onClose={() => setManagingCommission(null)} />}
+      {managingCommission && <CommissionRuleModal product={managingCommission} profiles={profiles} onClose={() => setManagingCommission(null)} />}
     </div>
   );
 }
@@ -1076,7 +1107,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
             <div key={s.id} className="list-manage-row">
               <span>
                 <span className="link-btn" onClick={() => setViewingPerson(s)}>{s.full_name}</span>
-                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>({s.role}{s.state ? ` · ${s.state}` : ''}{s.username ? ` · @${s.username}` : ''}) · {load} orders · last seen {timeAgo(lastSeen && lastSeen[s.id])}</span>
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>({s.role}{s.state ? ` · ${s.state}` : ''}{s.username ? ` · @${s.username}` : ''}) · {load} orders · joined {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'} · last seen {timeAgo(lastSeen && lastSeen[s.id])}</span>
                 {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Not receiving orders</span>}
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>

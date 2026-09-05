@@ -4,6 +4,20 @@ import { supabase } from '../../lib/supabaseClient';
 
 const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Rescheduled', 'Cancelled'];
 
+export function statusRowColor(status) {
+  const map = {
+    New: '#FBF6EC',
+    Confirmed: '#EAF4F1',
+    Preparing: '#EEEFF9',
+    Dispatched: '#EAF3FA',
+    Delivered: '#EAF6EA',
+    Unreachable: '#FBF0E2',
+    Rescheduled: '#F5F0FA',
+    Cancelled: '#FBEEED',
+  };
+  return map[status] || 'transparent';
+}
+
 export async function logEvent({ order_id, actor_id, actor_name, event_type, from_status, to_status, note }) {
   await supabase.from('order_events').insert({ order_id, actor_id, actor_name, event_type, from_status, to_status, note });
 }
@@ -33,17 +47,21 @@ export function getCycleStart(date) {
 export async function recordCommissionForOrder(order) {
   if (!order.staff_id || !order.product_id) return;
   const { data: rule } = await supabase.from('commission_rules').select('*').eq('product_id', order.product_id).maybeSingle();
-  if (!rule || !rule.active) return;
+  if (!rule) return;
+  const isEligible = !rule.eligible_staff || rule.eligible_staff.length === 0 || rule.eligible_staff.includes(order.staff_id);
+  if (!isEligible) return;
   const base = (order.quantity || 1) * Number(order.unit_price || 0);
   const cycleStart = getCycleStart(new Date());
-  const standardAmount = rule.standard_type === 'percentage' ? base * (rule.standard_value / 100) : rule.standard_value;
-  if (standardAmount > 0) {
-    await supabase.from('commission_ledger').insert({
-      order_id: order.id, staff_id: order.staff_id, product_id: order.product_id,
-      amount: standardAmount, commission_type: 'standard', cycle_start: cycleStart,
-    });
+  if (rule.standard_active) {
+    const standardAmount = rule.standard_type === 'percentage' ? base * (rule.standard_value / 100) : rule.standard_value;
+    if (standardAmount > 0) {
+      await supabase.from('commission_ledger').insert({
+        order_id: order.id, staff_id: order.staff_id, product_id: order.product_id,
+        amount: standardAmount, commission_type: 'standard', cycle_start: cycleStart,
+      });
+    }
   }
-  if (order.package_id) {
+  if (order.package_id && rule.upsell_active) {
     const upsellAmount = rule.upsell_type === 'percentage' ? base * (rule.upsell_value / 100) : rule.upsell_value;
     if (upsellAmount > 0) {
       await supabase.from('commission_ledger').insert({
@@ -56,6 +74,19 @@ export async function recordCommissionForOrder(order) {
 
 export async function reverseCommissionForOrder(orderId) {
   await supabase.from('commission_ledger').update({ reversed: true }).eq('order_id', orderId).eq('reversed', false);
+}
+
+export async function ensureFreeCommission(staffId) {
+  const { data: rule } = await supabase.from('free_commission_rules').select('*').eq('active', true).limit(1).maybeSingle();
+  if (!rule || !rule.amount || rule.amount <= 0) return;
+  const isEligible = !rule.eligible_staff || rule.eligible_staff.length === 0 || rule.eligible_staff.includes(staffId);
+  if (!isEligible) return;
+  const cycleStart = getCycleStart(new Date());
+  const { data: existing } = await supabase.from('commission_ledger').select('id').eq('staff_id', staffId).eq('commission_type', 'free').eq('cycle_start', cycleStart).maybeSingle();
+  if (existing) return;
+  await supabase.from('commission_ledger').insert({
+    staff_id: staffId, product_id: null, amount: rule.amount, commission_type: 'free', cycle_start: cycleStart,
+  });
 }
 
 
@@ -95,7 +126,7 @@ export function buildOrderSummary(order, products, packages) {
   const lines = [
     `Order: ${order.id}`,
     `Created: ${new Date(order.created_at).toLocaleString()}`,
-    `Customer: ${order.customer} (${order.phone || 'no phone'})`,
+    `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     `Product: ${product ? product.name : '—'} × ${order.quantity || 1}`,
     pkg ? `Package: ${pkg.name}` : null,
@@ -290,7 +321,7 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
             <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
               <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
-              I've also collected payment for this order — mark it Paid too
+              Has payment been remitted? (mark it Paid too)
             </label>
             <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
               Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
@@ -318,20 +349,36 @@ export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirm
   const [priority, setPriority] = useState(order.priority || 'Normal');
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
   const [remark, setRemark] = useState('');
+  const [statePref, setStatePref] = useState(null);
+  const [loadedPref, setLoadedPref] = useState(false);
 
   const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && order.state && p.state === order.state);
-  const willAutoAssign = !order.dispatch_id && matchingDispatch.length > 0;
+
+  useEffect(() => {
+    (async () => {
+      if (!order.state) { setLoadedPref(true); return; }
+      const { data } = await supabase.from('state_dispatch_preference').select('*').eq('state', order.state).maybeSingle();
+      setStatePref(data);
+      setLoadedPref(true);
+    })();
+  }, []);
+
+  const preferredAgent = statePref && statePref.active && statePref.dispatch_id
+    ? matchingDispatch.find(d => d.id === statePref.dispatch_id)
+    : null;
+  const chosenAgent = preferredAgent || matchingDispatch[0];
+  const willAutoAssign = !order.dispatch_id && !!chosenAgent;
 
   async function confirm() {
     const patch = {
       status: 'Confirmed', priority, preferred_time: preferredTime.trim(),
       confirmed_at: new Date().toISOString(), confirmed_by: profile?.id,
     };
-    if (willAutoAssign) patch.dispatch_id = matchingDispatch[0].id;
+    if (willAutoAssign) patch.dispatch_id = chosenAgent.id;
     await supabase.from('orders').update(patch).eq('id', order.id);
     await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
     if (willAutoAssign) {
-      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${matchingDispatch[0].full_name} (${order.state}) on confirmation.` });
+      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation.` });
     }
     if (remark.trim()) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
@@ -352,12 +399,14 @@ export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirm
         <input value={preferredTime} onChange={e => setPreferredTime(e.target.value)} placeholder="e.g. After 5pm, or Saturday morning" />
         <label>Remark for dispatch (optional)</label>
         <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything dispatch should know before delivering" />
-        {order.dispatch_id ? (
+        {!loadedPref ? null : order.dispatch_id ? (
           <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>Already assigned to a dispatch partner — confirming will notify them.</p>
         ) : willAutoAssign ? (
-          <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>✓ Will automatically send to {matchingDispatch[0].full_name} in {order.state} on confirmation.</p>
+          <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
+            ✓ Will automatically send to {chosenAgent.full_name} in {order.state} on confirmation{preferredAgent ? ' (admin-preferred agent)' : ''}.
+          </p>
         ) : (
-          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {order.state || 'this order\'s state'} yet — admin will need to assign one manually.</p>
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {order.state || "this order's state"} yet — admin will need to assign one manually.</p>
         )}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
@@ -543,6 +592,16 @@ export function ReportsPage({ orders, profiles, products, session }) {
         </>
       )}
 
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By status</h3>
+      <table style={{ marginBottom: '24px' }}>
+        <thead><tr><th>Status</th><th>Orders in this range</th></tr></thead>
+        <tbody>
+          {STATUSES.map(s => (
+            <tr key={s}><td><span className={'pill ' + s}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
+          ))}
+        </tbody>
+      </table>
+
       <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
       <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
 
@@ -657,7 +716,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
         <h3>{person.full_name}</h3>
         <p style={{ fontSize: '12.5px', color: '#8A93A0', marginTop: '-10px', marginBottom: '10px' }}>
           {person.role === 'dispatch' ? 'Dispatch partner' : person.role}{person.state ? ` · ${person.state}` : ''} ·
-          {' '}{person.active ? 'Receiving orders' : 'Not receiving orders'} · Last seen: {lastSeenText}
+          {' '}{person.active ? 'Receiving orders' : 'Not receiving orders'} · Joined {person.created_at ? new Date(person.created_at).toLocaleDateString() : '—'} · Last seen: {lastSeenText}
         </p>
         <div className="list-manage" style={{ marginBottom: '16px' }}>
           <div className="list-manage-row"><span>Email</span><span style={{ color: '#8A93A0' }}>{person.email || '—'}</span></div>
@@ -707,17 +766,29 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
 }
 
 // ---------- Settings: messaging toggles + external dispatch companies ----------
-export function SettingsPage({ settings, refresh }) {
+export function SettingsPage({ settings, profiles, refresh }) {
   const [companies, setCompanies] = useState([]);
   const [name, setName] = useState('');
   const [contactName, setContactName] = useState('');
   const [phone, setPhone] = useState('');
   const [channel, setChannel] = useState('whatsapp');
+  const [statePrefs, setStatePrefs] = useState({});
+  const [savingState, setSavingState] = useState('');
 
-  useEffect(() => { loadCompanies(); }, []);
+  const dispatchList = (profiles || []).filter(p => p.role === 'dispatch');
+  const statesWithMultipleAgents = [...new Set(dispatchList.map(d => d.state).filter(Boolean))]
+    .filter(st => dispatchList.filter(d => d.state === st).length > 1);
+
+  useEffect(() => { loadCompanies(); loadStatePrefs(); }, []);
   async function loadCompanies() {
     const { data } = await supabase.from('dispatch_companies').select('*').order('created_at', { ascending: false });
     setCompanies(data || []);
+  }
+  async function loadStatePrefs() {
+    const { data } = await supabase.from('state_dispatch_preference').select('*');
+    const map = {};
+    (data || []).forEach(r => { map[r.state] = r; });
+    setStatePrefs(map);
   }
 
   async function toggleSetting(key) {
@@ -735,6 +806,13 @@ export function SettingsPage({ settings, refresh }) {
   async function removeCompany(id) {
     await supabase.from('dispatch_companies').delete().eq('id', id);
     loadCompanies();
+  }
+
+  async function saveStatePref(state, dispatchId, active) {
+    setSavingState(state);
+    await supabase.from('state_dispatch_preference').upsert({ state, dispatch_id: dispatchId || null, active, updated_at: new Date().toISOString() });
+    await loadStatePrefs();
+    setSavingState('');
   }
 
   return (
@@ -756,6 +834,43 @@ export function SettingsPage({ settings, refresh }) {
         Even with these off, you can always send a confirmation manually from the order row. These only need
         TERMII / WhatsApp keys set up in Vercel to actually send — see the README.
       </p>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Preferred dispatch agent per state</h3>
+      <p style={{ fontSize: '12.5px', color: '#8A93A0', marginBottom: '10px' }}>
+        For states with more than one dispatch partner, pick who gets new orders automatically when a staff
+        member confirms one there. Stays in effect until you change it or turn it off.
+      </p>
+      <div className="list-manage" style={{ marginBottom: '22px' }}>
+        {statesWithMultipleAgents.length === 0 && (
+          <div className="list-manage-row" style={{ color: '#8A93A0' }}>No state currently has more than one dispatch partner — nothing to set yet.</div>
+        )}
+        {statesWithMultipleAgents.map(state => {
+          const agentsHere = dispatchList.filter(d => d.state === state);
+          const pref = statePrefs[state];
+          return (
+            <div key={state} className="list-manage-row">
+              <span style={{ minWidth: '100px', display: 'inline-block' }}>{state}</span>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <select
+                  value={pref?.dispatch_id || ''}
+                  onChange={e => saveStatePref(state, e.target.value, pref ? pref.active : true)}
+                  style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                >
+                  <option value="">— No preference (first match) —</option>
+                  {agentsHere.map(a => <option key={a.id} value={a.id}>{a.full_name}</option>)}
+                </select>
+                <button
+                  className="btn"
+                  onClick={() => saveStatePref(state, pref?.dispatch_id, !(pref ? pref.active : true))}
+                  disabled={savingState === state}
+                >
+                  {pref && !pref.active ? 'Off — turn on' : 'On — turn off'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>External dispatch companies</h3>
       <p style={{ fontSize: '12.5px', color: '#8A93A0', marginBottom: '10px' }}>
@@ -876,31 +991,39 @@ function SubmitOrderForm({ profile, products, refresh }) {
 }
 
 // ---------- Product packages (multiple named gift bundles per product) ----------
-export function CommissionRuleModal({ product, onClose }) {
-  const [rule, setRule] = useState(null);
+export function CommissionRuleModal({ product, profiles, onClose }) {
+  const [standardActive, setStandardActive] = useState(true);
   const [standardType, setStandardType] = useState('fixed');
   const [standardValue, setStandardValue] = useState(0);
+  const [upsellActive, setUpsellActive] = useState(true);
   const [upsellType, setUpsellType] = useState('fixed');
   const [upsellValue, setUpsellValue] = useState(0);
+  const [eligibleStaff, setEligibleStaff] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  const staffList = (profiles || []).filter(p => p.role === 'staff');
 
   useEffect(() => { load(); }, []);
   async function load() {
     const { data } = await supabase.from('commission_rules').select('*').eq('product_id', product.id).maybeSingle();
     if (data) {
-      setRule(data);
-      setStandardType(data.standard_type); setStandardValue(data.standard_value);
-      setUpsellType(data.upsell_type); setUpsellValue(data.upsell_value);
+      setStandardActive(data.standard_active); setStandardType(data.standard_type); setStandardValue(data.standard_value);
+      setUpsellActive(data.upsell_active); setUpsellType(data.upsell_type); setUpsellValue(data.upsell_value);
+      setEligibleStaff(data.eligible_staff || []);
     }
     setLoading(false);
+  }
+
+  function toggleStaff(id) {
+    setEligibleStaff(eligibleStaff.includes(id) ? eligibleStaff.filter(x => x !== id) : [...eligibleStaff, id]);
   }
 
   async function save() {
     const payload = {
       product_id: product.id,
-      standard_type: standardType, standard_value: parseFloat(standardValue) || 0,
-      upsell_type: upsellType, upsell_value: parseFloat(upsellValue) || 0,
-      active: true,
+      standard_active: standardActive, standard_type: standardType, standard_value: parseFloat(standardValue) || 0,
+      upsell_active: upsellActive, upsell_type: upsellType, upsell_value: parseFloat(upsellValue) || 0,
+      eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
     };
     await supabase.from('commission_rules').upsert(payload, { onConflict: 'product_id' });
     onClose();
@@ -912,25 +1035,51 @@ export function CommissionRuleModal({ product, onClose }) {
         <h3>Commission · {product.name}</h3>
         {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
           <>
-            <label style={{ marginTop: 0 }}>Standard commission (earned on every Paid order, staff only)</label>
-            <div className="row2">
-              <select value={standardType} onChange={e => setStandardType(e.target.value)}>
-                <option value="fixed">Fixed ₦ amount</option>
-                <option value="percentage">% of order value</option>
-              </select>
-              <input type="number" min="0" value={standardValue} onChange={e => setStandardValue(e.target.value)} placeholder={standardType === 'fixed' ? 'e.g. 200' : 'e.g. 5'} />
+            <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '0', marginBottom: '14px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 0, fontWeight: 600 }}>
+                Standard commission
+                <span>
+                  <input type="checkbox" checked={standardActive} onChange={e => setStandardActive(e.target.checked)} /> On
+                </span>
+              </label>
+              <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>Earned on every Paid order for this product.</p>
+              <div className="row2">
+                <select value={standardType} onChange={e => setStandardType(e.target.value)} disabled={!standardActive}>
+                  <option value="fixed">Fixed ₦ amount</option>
+                  <option value="percentage">% of order value</option>
+                </select>
+                <input type="number" min="0" value={standardValue} onChange={e => setStandardValue(e.target.value)} disabled={!standardActive} placeholder={standardType === 'fixed' ? 'e.g. 200' : 'e.g. 5'} />
+              </div>
             </div>
-            <label>Upsell bonus (extra, only when the order used a package)</label>
-            <div className="row2">
-              <select value={upsellType} onChange={e => setUpsellType(e.target.value)}>
-                <option value="fixed">Fixed ₦ amount</option>
-                <option value="percentage">% of order value</option>
-              </select>
-              <input type="number" min="0" value={upsellValue} onChange={e => setUpsellValue(e.target.value)} placeholder={upsellType === 'fixed' ? 'e.g. 100' : 'e.g. 3'} />
+
+            <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 0, fontWeight: 600 }}>
+                Upsell commission
+                <span>
+                  <input type="checkbox" checked={upsellActive} onChange={e => setUpsellActive(e.target.checked)} /> On
+                </span>
+              </label>
+              <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>Extra bonus, only when the Paid order used a package (upsell). Stacks on top of standard.</p>
+              <div className="row2">
+                <select value={upsellType} onChange={e => setUpsellType(e.target.value)} disabled={!upsellActive}>
+                  <option value="fixed">Fixed ₦ amount</option>
+                  <option value="percentage">% of order value</option>
+                </select>
+                <input type="number" min="0" value={upsellValue} onChange={e => setUpsellValue(e.target.value)} disabled={!upsellActive} placeholder={upsellType === 'fixed' ? 'e.g. 100' : 'e.g. 3'} />
+              </div>
             </div>
-            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>
-              Both apply together on a Paid order that used a package — e.g. ₦200 standard + ₦100 upsell = ₦300 for that order.
-            </p>
+
+            <label style={{ marginTop: 0 }}>Which staff can earn this? (for this product)</label>
+            <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto' }}>
+              {staffList.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No staff added yet.</p>}
+              {staffList.map(s => (
+                <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                  <input type="checkbox" checked={eligibleStaff.includes(s.id)} onChange={() => toggleStaff(s.id)} />
+                  {s.full_name}
+                </label>
+              ))}
+            </div>
+            <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to make every staff member eligible.</p>
           </>
         )}
         <div className="modal-actions">
@@ -1257,6 +1406,7 @@ export function CommissionPage({ profile, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
+    await ensureFreeCommission(profile.id);
     const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
@@ -1285,8 +1435,10 @@ export function CommissionPage({ profile, orders, products, session }) {
   const thisWeek = ledger.filter(l => !l.reversed && l.cycle_start === cycleStart);
   const thisWeekTotal = thisWeek.reduce((sum, l) => sum + Number(l.amount), 0);
 
+  const freeTotal = ledger.filter(l => !l.reversed && l.commission_type === 'free').reduce((sum, l) => sum + Number(l.amount), 0);
+
   const byProduct = {};
-  ledger.filter(l => !l.reversed).forEach(l => {
+  ledger.filter(l => !l.reversed && l.commission_type !== 'free').forEach(l => {
     if (!byProduct[l.product_id]) byProduct[l.product_id] = { standard: 0, upsell: 0, count: 0 };
     byProduct[l.product_id][l.commission_type] += Number(l.amount);
     byProduct[l.product_id].count += 1;
@@ -1313,6 +1465,7 @@ export function CommissionPage({ profile, orders, products, session }) {
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginBottom: '6px', letterSpacing: '.5px' }}>YOUR UNCLAIMED BALANCE</div>
         <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '42px', fontWeight: 700 }}>₦{balance.toLocaleString()}</div>
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginTop: '6px' }}>₦{thisWeekTotal.toLocaleString()} earned this week so far</div>
+        {freeTotal > 0 && <div style={{ fontSize: '11.5px', opacity: 0.75, marginTop: '2px' }}>Includes ₦{freeTotal.toLocaleString()} in free commission, no orders required</div>}
         <div style={{ marginTop: '18px' }}>
           {balance <= 0 ? (
             <span style={{ fontSize: '12.5px', opacity: 0.75 }}>Deliver more Paid orders to start earning towards your next claim.</span>
@@ -1382,19 +1535,33 @@ export function AdminCommissionPage({ profiles, orders, session }) {
   const [ledgerAll, setLedgerAll] = useState([]);
   const [claimsAll, setClaimsAll] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [freeActive, setFreeActive] = useState(false);
+  const [freeAmount, setFreeAmount] = useState(0);
+  const [freeEligible, setFreeEligible] = useState([]);
+  const [savingFree, setSavingFree] = useState(false);
 
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const staffList = profiles.filter(p => p.role === 'staff');
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: rateSetting }, { data: daySetting }, { data: led }, { data: cl }] = await Promise.all([
+    const [{ data: rateSetting }, { data: daySetting }, { data: freeRule }] = await Promise.all([
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
-      supabase.from('commission_ledger').select('*'),
-      supabase.from('commission_claims').select('*'),
+      supabase.from('free_commission_rules').select('*').limit(1).maybeSingle(),
     ]);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    if (freeRule) {
+      setFreeActive(freeRule.active); setFreeAmount(freeRule.amount); setFreeEligible(freeRule.eligible_staff || []);
+      if (freeRule.active) {
+        await Promise.all(staffList.map(s => ensureFreeCommission(s.id)));
+      }
+    }
+    const [{ data: led }, { data: cl }] = await Promise.all([
+      supabase.from('commission_ledger').select('*'),
+      supabase.from('commission_claims').select('*'),
+    ]);
     setLedgerAll(led || []);
     setClaimsAll(cl || []);
   }
@@ -1408,7 +1575,22 @@ export function AdminCommissionPage({ profiles, orders, session }) {
     setSaving(false);
   }
 
-  const staffList = profiles.filter(p => p.role === 'staff');
+  function toggleFreeStaff(id) {
+    setFreeEligible(freeEligible.includes(id) ? freeEligible.filter(x => x !== id) : [...freeEligible, id]);
+  }
+
+  async function saveFreeRule() {
+    setSavingFree(true);
+    const { data: existing } = await supabase.from('free_commission_rules').select('id').limit(1).maybeSingle();
+    const payload = { active: freeActive, amount: parseFloat(freeAmount) || 0, eligible_staff: freeEligible.length > 0 ? freeEligible : null };
+    if (existing) {
+      await supabase.from('free_commission_rules').update(payload).eq('id', existing.id);
+    } else {
+      await supabase.from('free_commission_rules').insert(payload);
+    }
+    setSavingFree(false);
+    load();
+  }
 
   return (
     <div>
@@ -1425,10 +1607,32 @@ export function AdminCommissionPage({ profiles, orders, session }) {
         <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set the rate to 0 to let everyone claim freely regardless of performance.</p>
       </div>
 
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 0, fontWeight: 600 }}>
+          Free commission (flat, regardless of performance)
+          <span><input type="checkbox" checked={freeActive} onChange={e => setFreeActive(e.target.checked)} /> On</span>
+        </label>
+        <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>A separate rule from product commission — every eligible staff member gets this amount added automatically, once per cycle, no order required.</p>
+        <label className="field-label">Amount per cycle (₦)</label>
+        <input type="number" min="0" value={freeAmount} onChange={e => setFreeAmount(e.target.value)} disabled={!freeActive} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }} />
+        <label className="field-label">Who's eligible?</label>
+        <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '140px', overflowY: 'auto', marginBottom: '10px' }}>
+          {staffList.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No staff added yet.</p>}
+          {staffList.map(s => (
+            <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+              <input type="checkbox" checked={freeEligible.includes(s.id)} onChange={() => toggleFreeStaff(s.id)} disabled={!freeActive} />
+              {s.full_name}
+            </label>
+          ))}
+        </div>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-4px', marginBottom: '10px' }}>Leave all unchecked to make everyone eligible.</p>
+        <button className="btn primary" onClick={saveFreeRule} disabled={savingFree} style={{ width: '100%' }}>{savingFree ? 'Saving…' : 'Save free commission rule'}</button>
+      </div>
+
       <table>
-        <thead><tr><th>Staff</th><th>Unclaimed balance</th><th>Success rate</th><th>Eligible?</th><th>Last claim</th></tr></thead>
+        <thead><tr><th>Staff</th><th>Joined</th><th>Unclaimed balance</th><th>Success rate</th><th>Eligible?</th><th>Last claim</th></tr></thead>
         <tbody>
-          {staffList.length === 0 && <tr><td colSpan="5" className="empty">No staff added yet.</td></tr>}
+          {staffList.length === 0 && <tr><td colSpan="6" className="empty">No staff added yet.</td></tr>}
           {staffList.map(s => {
             const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
             const myClaims = claimsAll.filter(c => c.staff_id === s.id);
@@ -1443,6 +1647,7 @@ export function AdminCommissionPage({ profiles, orders, session }) {
             return (
               <tr key={s.id}>
                 <td>{s.full_name}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}</td>
                 <td>₦{balance.toLocaleString()}</td>
                 <td>{rate.toFixed(0)}%</td>
                 <td><span className={'pill ' + (rate >= threshold ? 'Delivered' : 'Cancelled')}>{rate >= threshold ? 'Eligible' : 'Not yet'}</span></td>
