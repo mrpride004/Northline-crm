@@ -1747,7 +1747,7 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
         </div>
 
         <label style={{ marginTop: 0 }}>Upsell product</label>
-        <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); }}>
+        <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); setUnitPrice(''); }}>
           <option value="">— Select product —</option>
           {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
