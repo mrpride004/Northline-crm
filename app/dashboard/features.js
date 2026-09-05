@@ -376,7 +376,15 @@ export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirm
     };
     if (willAutoAssign) patch.dispatch_id = chosenAgent.id;
     await supabase.from('orders').update(patch).eq('id', order.id);
+    await supabase.from('original_order_snapshots').upsert({
+      order_id: order.id, customer: order.customer, phone: order.phone,
+      product_id: order.product_id, package_id: order.package_id, quantity: order.quantity,
+      unit_price: order.unit_price, total_amount: (order.quantity || 1) * Number(order.unit_price || 0),
+      staff_id: order.staff_id, created_at: order.created_at, confirmed_at: patch.confirmed_at,
+      order_source: order.created_by ? 'staff_submission' : 'admin', original_status: 'Confirmed',
+    }, { onConflict: 'order_id' });
     await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
+    await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
     if (willAutoAssign) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation.` });
     }
@@ -1689,6 +1697,339 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ---------- Phase 1 fraud-proof upsell system ----------
+
+export function AddUpsellModal({ order, products, packages, profile, onClose, onCreated }) {
+  const [upsellProductId, setUpsellProductId] = useState('');
+  const [upsellPackageId, setUpsellPackageId] = useState('');
+  const [additionalQuantity, setAdditionalQuantity] = useState(1);
+  const [unitPrice, setUnitPrice] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const originalProduct = products.find(p => p.id === order.product_id);
+  const originalPackage = (packages || []).find(p => p.id === order.package_id);
+  const upsellPackages = (packages || []).filter(p => p.product_id === upsellProductId);
+
+  function onPackageChange(id) {
+    setUpsellPackageId(id);
+    const pkg = upsellPackages.find(p => p.id === id);
+    if (pkg && pkg.price != null) setUnitPrice(pkg.price);
+  }
+
+  async function submit() {
+    if (!upsellProductId || !additionalQuantity || unitPrice === '') { setError('Fill in the upsell product, quantity, and price.'); return; }
+    setSaving(true);
+    const { data, error: rpcError } = await supabase.rpc('create_upsell', {
+      p_original_order_id: order.id,
+      p_upsell_product_id: upsellProductId,
+      p_upsell_package_id: upsellPackageId || null,
+      p_additional_quantity: parseInt(additionalQuantity, 10) || 1,
+      p_unit_price: parseFloat(unitPrice) || 0,
+    });
+    setSaving(false);
+    if (rpcError) { setError(rpcError.message); return; }
+    onCreated();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Add upsell · {order.customer}</h3>
+        <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px' }}>
+          <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px', fontWeight: 600 }}>ORIGINAL CONFIRMED ORDER (locked)</div>
+          <div style={{ fontSize: '13.5px' }}>{originalProduct ? originalProduct.name : '—'}{originalPackage ? ` · ${originalPackage.name}` : ''}</div>
+          <div style={{ fontSize: '12px', color: '#8A93A0' }}>Quantity: {order.quantity || 1} · ₦{Number(order.unit_price || 0).toLocaleString()} each</div>
+        </div>
+
+        <label style={{ marginTop: 0 }}>Upsell product</label>
+        <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); }}>
+          <option value="">— Select product —</option>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {upsellPackages.length > 0 && (
+          <>
+            <label>Upsell package (optional)</label>
+            <select value={upsellPackageId} onChange={e => onPackageChange(e.target.value)}>
+              <option value="">— No package —</option>
+              {upsellPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </>
+        )}
+        <div className="row2">
+          <div><label>Additional quantity</label><input type="number" min="1" value={additionalQuantity} onChange={e => setAdditionalQuantity(e.target.value)} /></div>
+          <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
+        </div>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '10px' }}>
+          Commission is calculated automatically from the admin's rules once this order is delivered and paid — you won't set an amount here.
+        </p>
+        {error && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '8px' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={submit} disabled={saving}>{saving ? 'Adding…' : 'Add upsell'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function RequestCorrectionModal({ order, profile, onClose, onSubmitted }) {
+  const [field, setField] = useState('quantity');
+  const [requestedValue, setRequestedValue] = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const currentValues = { quantity: order.quantity, unit_price: order.unit_price, address: order.address, phone: order.phone };
+
+  async function submit() {
+    if (!requestedValue.trim() || !reason.trim()) return;
+    setSaving(true);
+    await supabase.from('order_corrections').insert({
+      order_id: order.id, field, original_value: String(currentValues[field] ?? ''),
+      requested_value: requestedValue.trim(), reason: reason.trim(), requested_by: profile?.id,
+    });
+    await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Correction Requested', order_id: order.id, previous_value: String(currentValues[field] ?? ''), new_value: requestedValue.trim(), reason: reason.trim() });
+    setSaving(false);
+    onSubmitted();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Request correction · {order.customer}</h3>
+        <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-8px', marginBottom: '12px' }}>
+          This order is confirmed and locked. An admin will review and approve or reject this request — nothing changes until then.
+        </p>
+        <label style={{ marginTop: 0 }}>What needs to change?</label>
+        <select value={field} onChange={e => setField(e.target.value)}>
+          <option value="quantity">Quantity (currently {order.quantity})</option>
+          <option value="unit_price">Unit price (currently ₦{order.unit_price})</option>
+          <option value="address">Delivery address</option>
+          <option value="phone">Phone number</option>
+        </select>
+        <label>Requested new value</label>
+        <input value={requestedValue} onChange={e => setRequestedValue(e.target.value)} />
+        <label>Reason</label>
+        <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Why does this need to change?" />
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={submit} disabled={saving}>{saving ? 'Submitting…' : 'Submit request'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function CorrectionsPage({ profile, session, refresh }) {
+  const [corrections, setCorrections] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('order_corrections').select('*').order('created_at', { ascending: false });
+    setCorrections(data || []);
+    setLoading(false);
+  }
+
+  async function review(correction, approve) {
+    if (approve) {
+      const patch = {};
+      const val = ['quantity'].includes(correction.field) ? parseInt(correction.requested_value, 10)
+        : ['unit_price'].includes(correction.field) ? parseFloat(correction.requested_value)
+        : correction.requested_value;
+      patch[correction.field] = val;
+      await supabase.from('orders').update(patch).eq('id', correction.order_id);
+    }
+    await supabase.from('order_corrections').update({
+      status: approve ? 'Approved' : 'Rejected', reviewed_by: profile?.id, reviewed_at: new Date().toISOString(),
+    }).eq('id', correction.id);
+    await supabase.from('audit_log').insert({
+      actor_id: profile?.id, actor_name: profile?.full_name,
+      action: approve ? 'Correction Approved' : 'Correction Rejected',
+      order_id: correction.order_id, previous_value: correction.original_value, new_value: correction.requested_value,
+    });
+    load();
+  }
+
+  if (loading) return <div className="loading">Loading corrections…</div>;
+  const pending = corrections.filter(c => c.status === 'Pending');
+  const resolved = corrections.filter(c => c.status !== 'Pending');
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Order Corrections</h1><p className="page-sub">Requests to change a locked, confirmed order. Nothing changes until you approve it.</p></div></div>
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Pending ({pending.length})</h3>
+      <table style={{ marginBottom: '24px' }}>
+        <thead><tr><th>Order</th><th>Field</th><th>From → To</th><th>Reason</th><th></th></tr></thead>
+        <tbody>
+          {pending.length === 0 && <tr><td colSpan="5" className="empty">Nothing waiting for review.</td></tr>}
+          {pending.map(c => (
+            <tr key={c.id}>
+              <td className="oid">{c.order_id.slice(0, 8)}</td>
+              <td>{c.field}</td>
+              <td>{c.original_value} → {c.requested_value}</td>
+              <td style={{ fontSize: '12px' }}>{c.reason}</td>
+              <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <button className="link-btn" onClick={() => review(c, true)}>Approve</button>{' · '}
+                <button className="link-btn" style={{ color: '#B0483F' }} onClick={() => review(c, false)}>Reject</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>History</h3>
+      <table>
+        <thead><tr><th>Order</th><th>Field</th><th>From → To</th><th>Status</th></tr></thead>
+        <tbody>
+          {resolved.length === 0 && <tr><td colSpan="4" className="empty">No resolved requests yet.</td></tr>}
+          {resolved.map(c => (
+            <tr key={c.id}>
+              <td className="oid">{c.order_id.slice(0, 8)}</td>
+              <td>{c.field}</td>
+              <td>{c.original_value} → {c.requested_value}</td>
+              <td><span className={'pill ' + (c.status === 'Approved' ? 'Delivered' : 'Cancelled')}>{c.status}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function UpsellRulesPage({ products, packages }) {
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('upsell_commission_rules').select('*').order('created_at', { ascending: false });
+    setRules(data || []);
+    setLoading(false);
+  }
+  const prodName = id => id ? (products.find(p => p.id === id) || {}).name || '—' : 'Any';
+  const pkgName = id => id ? (packages.find(p => p.id === id) || {}).name || '—' : 'Any';
+  const fmt = (type, value) => type === 'percentage' ? `${value}%` : type === 'per_unit' ? `₦${value}/unit` : `₦${Number(value).toLocaleString()}`;
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Upsell Commission Rules</h1><p className="page-sub">Fully dynamic — works with any product or package you list, now or in the future.</p></div>
+        <button className="btn primary" onClick={() => setEditing({})}>+ New rule</button>
+      </div>
+      {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
+        <table>
+          <thead><tr><th>Original</th><th>Upsell</th><th>Commission</th><th>Active</th><th>Effective</th><th></th></tr></thead>
+          <tbody>
+            {rules.length === 0 && <tr><td colSpan="6" className="empty">No rules yet — click "+ New rule" to create one.</td></tr>}
+            {rules.map(r => (
+              <tr key={r.id}>
+                <td>{prodName(r.original_product_id)} · {pkgName(r.original_package_id)}</td>
+                <td>{prodName(r.upsell_product_id)} · {pkgName(r.upsell_package_id)}</td>
+                <td>{fmt(r.commission_type, r.commission_value)}</td>
+                <td><span className={'pill ' + (r.active ? 'Delivered' : 'Cancelled')}>{r.active ? 'On' : 'Off'}</span></td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{r.effective_start}{r.effective_end ? ` – ${r.effective_end}` : ''}</td>
+                <td style={{ textAlign: 'right' }}><button className="link-btn" onClick={() => setEditing(r)}>Edit</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {editing && <UpsellRuleModal rule={editing} products={products} packages={packages} onClose={() => { setEditing(null); load(); }} />}
+    </div>
+  );
+}
+
+function UpsellRuleModal({ rule, products, packages, onClose }) {
+  const isNew = !rule.id;
+  const [originalProductId, setOriginalProductId] = useState(rule.original_product_id || '');
+  const [originalPackageId, setOriginalPackageId] = useState(rule.original_package_id || '');
+  const [upsellProductId, setUpsellProductId] = useState(rule.upsell_product_id || '');
+  const [upsellPackageId, setUpsellPackageId] = useState(rule.upsell_package_id || '');
+  const [commissionType, setCommissionType] = useState(rule.commission_type || 'fixed');
+  const [commissionValue, setCommissionValue] = useState(rule.commission_value || 0);
+  const [active, setActive] = useState(rule.active !== false);
+  const [effectiveStart, setEffectiveStart] = useState(rule.effective_start || new Date().toISOString().slice(0, 10));
+  const [effectiveEnd, setEffectiveEnd] = useState(rule.effective_end || '');
+
+  const originalPackages = originalProductId ? packages.filter(p => p.product_id === originalProductId) : [];
+  const upsellPackages = upsellProductId ? packages.filter(p => p.product_id === upsellProductId) : [];
+
+  async function save() {
+    const payload = {
+      original_product_id: originalProductId || null, original_package_id: originalPackageId || null,
+      upsell_product_id: upsellProductId || null, upsell_package_id: upsellPackageId || null,
+      commission_type: commissionType, commission_value: parseFloat(commissionValue) || 0,
+      active, effective_start: effectiveStart, effective_end: effectiveEnd || null,
+    };
+    if (isNew) {
+      await supabase.from('upsell_commission_rules').insert(payload);
+    } else {
+      await supabase.from('upsell_commission_rules').update(payload).eq('id', rule.id);
+    }
+    onClose();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>{isNew ? 'New' : 'Edit'} upsell rule</h3>
+        <label style={{ marginTop: 0 }}>Original product (leave blank for "any")</label>
+        <select value={originalProductId} onChange={e => { setOriginalProductId(e.target.value); setOriginalPackageId(''); }}>
+          <option value="">Any product</option>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {originalPackages.length > 0 && (
+          <>
+            <label>Original package</label>
+            <select value={originalPackageId} onChange={e => setOriginalPackageId(e.target.value)}>
+              <option value="">Any package</option>
+              {originalPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </>
+        )}
+        <label>Upsell product (leave blank for "any")</label>
+        <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); }}>
+          <option value="">Any product</option>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {upsellPackages.length > 0 && (
+          <>
+            <label>Upsell package</label>
+            <select value={upsellPackageId} onChange={e => setUpsellPackageId(e.target.value)}>
+              <option value="">Any package</option>
+              {upsellPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </>
+        )}
+        <div className="row2">
+          <div><label>Commission type</label>
+            <select value={commissionType} onChange={e => setCommissionType(e.target.value)}>
+              <option value="fixed">Fixed ₦ amount</option>
+              <option value="percentage">% of upsell value</option>
+              <option value="per_unit">₦ per unit</option>
+              <option value="per_package">₦ per package</option>
+              <option value="per_event">₦ per upsell event</option>
+            </select>
+          </div>
+          <div><label>Value</label><input type="number" min="0" value={commissionValue} onChange={e => setCommissionValue(e.target.value)} /></div>
+        </div>
+        <div className="row2">
+          <div><label>Effective from</label><input type="date" value={effectiveStart} onChange={e => setEffectiveStart(e.target.value)} /></div>
+          <div><label>Effective until (optional)</label><input type="date" value={effectiveEnd} onChange={e => setEffectiveEnd(e.target.value)} /></div>
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} /> Active
+        </label>
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save}>Save rule</button>
+        </div>
+      </div>
     </div>
   );
 }

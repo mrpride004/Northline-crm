@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -13,6 +13,8 @@ const APP_SECTIONS = [
   { key: 'reports', label: 'Reports' },
   { key: 'settings', label: 'Settings' },
   { key: 'commission', label: 'Commission' },
+  { key: 'upsellrules', label: 'Upsell Rules' },
+  { key: 'corrections', label: 'Corrections' },
 ];
 
 export default function Dashboard() {
@@ -112,6 +114,8 @@ export default function Dashboard() {
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
+    { key: 'upsellrules', label: 'Upsell Rules' },
+    { key: 'corrections', label: 'Corrections' },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
     { key: 'dashboard', label: 'My orders', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
@@ -164,6 +168,8 @@ export default function Dashboard() {
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
+        {isAdmin && page === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} />}
+        {isAdmin && page === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={refreshAll} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
@@ -222,7 +228,7 @@ function AdminOverview({ orders, products, profiles }) {
   );
 }
 
-function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
+function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCorrection, onSave, onClose }) {
   const [productId, setProductId] = useState(order ? order.product_id : (products[0] ? products[0].id : ''));
   const [customer, setCustomer] = useState(order ? order.customer : '');
   const [phone, setPhone] = useState(order ? order.phone : '');
@@ -246,6 +252,7 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
   const giftProduct = selectedPackage ? products.find(p => p.id === selectedPackage.gift_product_id) : null;
   const dispatchInState = (profiles || []).filter(p => p.role === 'dispatch' && p.active && state && p.state === state);
   const otherDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && (!state || p.state !== state));
+  const isLocked = !!order && order.status !== 'New' && !isAdmin;
 
   function onPackageChange(id) {
     setPackageId(id);
@@ -282,14 +289,20 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>{order ? 'Edit order' : 'New order'}</h3>
+        {isLocked && (
+          <div className="banner" style={{ marginTop: 0 }}>
+            This order is confirmed — product, package, quantity, and price are locked to protect against
+            fraud. {onRequestCorrection && <button className="link-btn" onClick={() => onRequestCorrection(order)}>Request a correction</button>} instead if something genuinely needs to change.
+          </div>
+        )}
         <label>Product</label>
-        <select value={productId} onChange={e => { setProductId(e.target.value); setPackageId(''); setGiftQuantity(0); }}>
+        <select value={productId} onChange={e => { setProductId(e.target.value); setPackageId(''); setGiftQuantity(0); }} disabled={isLocked}>
           {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name} ({p.stock_quantity ?? 0} in stock){(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
         </select>
         {productPackages.length > 0 && (
           <>
             <label>Package</label>
-            <select value={packageId} onChange={e => onPackageChange(e.target.value)}>
+            <select value={packageId} onChange={e => onPackageChange(e.target.value)} disabled={isLocked}>
               <option value="">— No package (just the product) —</option>
               {productPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
@@ -302,8 +315,8 @@ function OrderModal({ products, packages, profiles, order, onSave, onClose }) {
           <div><label>Alternate phone (optional)</label><input value={phone2} onChange={e => setPhone2(e.target.value)} placeholder="080..." /></div>
         </div>
         <div className="row2">
-          <div><label>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} /></div>
-          <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} placeholder="0" /></div>
+          <div><label>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} disabled={isLocked} /></div>
+          <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} placeholder="0" disabled={isLocked} /></div>
         </div>
         <div className="row2">
           <div><label>Delivery fee (₦)</label><input type="number" min="0" value={deliveryFee} onChange={e => setDeliveryFee(e.target.value)} /></div>
@@ -423,6 +436,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [exportFrom, setExportFrom] = useState('');
   const [exportTo, setExportTo] = useState('');
   const [showExportPicker, setShowExportPicker] = useState(false);
+  const [requestingCorrection, setRequestingCorrection] = useState(null);
+  const [addingUpsellTo, setAddingUpsellTo] = useState(null);
   const [viewingPerson, setViewingPerson] = useState(null);
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
   const [todayOnly, setTodayOnly] = useState(false);
@@ -493,6 +508,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function createOrder(fields) {
+    if (myRole === 'staff' && !fields.staff_id) {
+      fields = { ...fields, staff_id: myId };
+    }
     const { data, error } = await supabase.from('orders').insert(fields).select().single();
     setShowNew(false);
     if (!error && data) {
@@ -554,6 +572,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     if (meta === 'assigned') {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
     }
+    if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
+      await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
+    }
     refresh();
   }
 
@@ -561,6 +582,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed — marked as Paid.' });
     await recordCommissionForOrder(o);
+    await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
     refresh();
   }
 
@@ -684,7 +706,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 </td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {isAdmin || (myRole === 'staff' && o.staff_id === myId) ? (
+                    {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
                       <select className="status-sel" value={o.status} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                         {STATUSES.filter(s => s !== 'New' || o.status === 'New').map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
@@ -713,9 +735,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
                   {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && <><button className="link-btn" onClick={() => setConfirming(o)}>Reconfirm</button>{' · '}</>}
+                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && <><button className="link-btn" onClick={() => setAddingUpsellTo(o)}>Add upsell</button>{' · '}</>}
                   {isAdmin && <button className="link-btn" onClick={() => setAssigning(o)}>Assign / Send to dispatch</button>}
                   {' · '}
-                  {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
+                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
                   <button className="link-btn" onClick={() => setActionsOpenFor(actionsOpenFor === o.id ? null : o.id)}>More ▾</button>
                   {actionsOpenFor === o.id && (
                     <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '6px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', zIndex: 30, textAlign: 'left', minWidth: '190px', padding: '6px' }}>
@@ -737,8 +760,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         </table>
       )}
 
-      {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} onClose={() => setShowNew(false)} onSave={createOrder} />}
-      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} order={editing} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
+      {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
+      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
+      {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
       {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
@@ -915,6 +940,9 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     if (remark && remark.trim()) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
     }
+    if (status === 'Delivered' || paidNow) {
+      await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
+    }
     setStatusChanging(null);
     refresh();
   }
@@ -923,6 +951,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed by dispatch — marked as Paid.' });
     await recordCommissionForOrder(o);
+    await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
     refresh();
   }
 
