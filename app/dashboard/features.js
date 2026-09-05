@@ -2041,6 +2041,8 @@ export function UpsellsPage({ products, packages, profiles }) {
   const [upsells, setUpsells] = useState([]);
   const [loading, setLoading] = useState(true);
   const [cancelReason, setCancelReason] = useState({});
+  const [holdReason, setHoldReason] = useState({});
+  const [busy, setBusy] = useState(null);
 
   useEffect(() => { load(); }, []);
   async function load() {
@@ -2053,15 +2055,65 @@ export function UpsellsPage({ products, packages, profiles }) {
 
   async function cancel(u) {
     const reason = cancelReason[u.id] || 'No reason given';
+    setBusy(u.id);
     await supabase.rpc('cancel_upsell', { p_upsell_id: u.id, p_reason: reason });
+    setBusy(null);
+    load();
+  }
+  async function approve(u) {
+    setBusy(u.id);
+    const { error } = await supabase.rpc('approve_upsell_commission', { p_upsell_id: u.id });
+    setBusy(null);
+    if (error) { alert(error.message); return; }
+    load();
+  }
+  async function hold(u) {
+    const reason = holdReason[u.id] || 'No reason given';
+    setBusy(u.id);
+    await supabase.rpc('hold_upsell', { p_upsell_id: u.id, p_reason: reason });
+    setBusy(null);
     load();
   }
 
   if (loading) return <div className="loading">Loading upsells…</div>;
 
+  const pendingApproval = upsells.filter(u => u.commission_status === 'Eligible');
+
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">Upsells</h1><p className="page-sub">Every genuine upsell, created only through the dedicated Add Upsell flow — never by editing an original order.</p></div></div>
+
+      {pendingApproval.length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Waiting for your approval ({pendingApproval.length})</h3>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>Order</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th></th></tr></thead>
+            <tbody>
+              {pendingApproval.map(u => (
+                <tr key={u.id}>
+                  <td className="oid">{u.original_order_id.slice(0, 8)}</td>
+                  <td>{staffName(u.staff_id)}</td>
+                  <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
+                  <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
+                  <td>₦{Number(u.commission_amount).toLocaleString()}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button className="btn primary" disabled={busy === u.id} onClick={() => approve(u)} style={{ marginRight: '6px' }}>Approve</button>
+                    <input
+                      placeholder="hold reason"
+                      value={holdReason[u.id] || ''}
+                      onChange={e => setHoldReason({ ...holdReason, [u.id]: e.target.value })}
+                      style={{ width: '90px', fontSize: '11px', padding: '4px 6px', border: '1px solid #DEDAD0', borderRadius: '4px', marginRight: '6px' }}
+                    />
+                    <button className="btn" disabled={busy === u.id} onClick={() => hold(u)}>Hold</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>All upsells</h3>
       <table>
         <thead><tr><th>Order</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>Status</th><th></th></tr></thead>
         <tbody>
@@ -2073,9 +2125,9 @@ export function UpsellsPage({ products, packages, profiles }) {
               <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
               <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
               <td>₦{Number(u.commission_amount).toLocaleString()}</td>
-              <td><span className={'pill ' + (u.commission_status === 'Paid' || u.commission_status === 'Eligible' || u.commission_status === 'Approved' ? 'Delivered' : u.commission_status === 'Rejected' || u.commission_status === 'Reversed' ? 'Cancelled' : 'New')}>{u.commission_status}</span></td>
+              <td><span className={'pill ' + (u.commission_status === 'Paid' || u.commission_status === 'Approved' ? 'Delivered' : u.commission_status === 'Eligible' ? 'Preparing' : u.commission_status === 'Rejected' || u.commission_status === 'Reversed' ? 'Cancelled' : 'New')}>{u.commission_status}</span></td>
               <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                {!['Rejected', 'Reversed'].includes(u.commission_status) && (
+                {!['Rejected', 'Reversed', 'Approved', 'Paid'].includes(u.commission_status) && (
                   <>
                     <input
                       placeholder="reason"
