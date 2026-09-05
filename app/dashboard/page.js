@@ -33,6 +33,7 @@ export default function Dashboard() {
   const [dispatchCompanies, setDispatchCompanies] = useState([]);
   const [packages, setPackages] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
+  const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState({});
 
@@ -63,7 +64,7 @@ export default function Dashboard() {
   }, []);
 
   async function refreshAll() {
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -72,6 +73,7 @@ export default function Dashboard() {
       supabase.from('dispatch_companies').select('*').eq('active', true),
       supabase.from('product_packages').select('*'),
       supabase.from('order_events').select('*').eq('event_type', 'remark').order('created_at', { ascending: false }).limit(500),
+      supabase.from('upsells').select('*'),
     ]);
     setProducts(prod || []);
     setOrders(ord || []);
@@ -87,6 +89,12 @@ export default function Dashboard() {
       if (!remarkMap[e.order_id]) remarkMap[e.order_id] = e; // first hit per order = most recent, since already sorted desc
     });
     setLatestRemarks(remarkMap);
+    const upsellMap = {};
+    (upsellRows || []).forEach(u => {
+      if (!upsellMap[u.original_order_id]) upsellMap[u.original_order_id] = [];
+      upsellMap[u.original_order_id].push(u);
+    });
+    setUpsellsByOrder(upsellMap);
   }
 
   async function signOut() {
@@ -164,7 +172,7 @@ export default function Dashboard() {
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
-        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
+        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
@@ -177,11 +185,11 @@ export default function Dashboard() {
         {isAdmin && page === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
         {isAdmin && page === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
 
-        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} refresh={refreshAll} />}
+        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
 
-        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} latestRemarks={latestRemarks} profile={profile} refresh={refreshAll} />}
+        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} profile={profile} refresh={refreshAll} />}
         {profile.role === 'dispatch' && page === 'mystock' && <MyStockPage profile={profile} agentStock={agentStock} products={products} />}
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
@@ -425,7 +433,7 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
-function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, lastSeen, session, refresh }) {
+function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, upsellsByOrder, lastSeen, session, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
   const [statusTab, setStatusTab] = useState('all');
@@ -682,11 +690,21 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
                   {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
+                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
                   {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
                   {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
                   {o.created_by && (
                     <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>
                       ✎ Submitted by {personName(o.created_by)}
+                    </div>
+                  )}
+                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
+                    <div style={{ marginTop: '4px' }}>
+                      {upsellsByOrder[o.id].map(u => (
+                        <div key={u.id} style={{ fontSize: '10.5px', background: '#EAF4F1', color: '#1F4D44', borderRadius: '10px', padding: '2px 8px', display: 'inline-block', marginRight: '4px', marginBottom: '2px' }}>
+                          ⬆ +{u.additional_quantity} {prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · {u.commission_status}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </td>
@@ -893,7 +911,7 @@ function DeliveryFeeCell({ order, onSave }) {
   );
 }
 
-function DispatchPage({ orders, products, packages, latestRemarks, profile, refresh }) {
+function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrder, profile, refresh }) {
   const [statusChanging, setStatusChanging] = useState(null);
   const [statusTab, setStatusTab] = useState('all');
   const [todayOnly, setTodayOnly] = useState(false);
@@ -999,9 +1017,19 @@ function DispatchPage({ orders, products, packages, latestRemarks, profile, refr
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
                   {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
+                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
                   {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
                   {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
+                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
+                    <div style={{ marginTop: '4px' }}>
+                      {upsellsByOrder[o.id].map(u => (
+                        <div key={u.id} style={{ fontSize: '10.5px', background: '#EAF4F1', color: '#1F4D44', borderRadius: '10px', padding: '2px 8px', display: 'inline-block', marginRight: '4px', marginBottom: '2px' }}>
+                          ⬆ +{u.additional_quantity} {prodName(u.upsell_product_id)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
                 <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
