@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, ensureFreeCommission, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -174,13 +174,13 @@ export default function Dashboard() {
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
-        {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
+        {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
-        {isAdmin && page === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} />}
+        {isAdmin && page === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} profiles={profiles} />}
         {isAdmin && page === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
         {isAdmin && page === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
@@ -194,7 +194,7 @@ export default function Dashboard() {
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
 
-        {isInventoryManager && page === 'dashboard' && <InventoryPage products={products} orders={orders} refresh={refreshAll} />}
+        {isInventoryManager && page === 'dashboard' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isInventoryManager && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
       </div>
     </div>
@@ -332,16 +332,18 @@ function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCor
           <div><label>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} disabled={isLocked} /></div>
           <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} placeholder="0" disabled={isLocked} /></div>
         </div>
-        <div className="row2">
-          <div><label>Delivery fee (₦)</label><input type="number" min="0" value={deliveryFee} onChange={e => setDeliveryFee(e.target.value)} /></div>
-          <div><label>Payment status</label>
-            <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)}>
-              <option value="Unpaid">Unpaid</option>
-              <option value="Partial">Partial</option>
-              <option value="Paid">Paid</option>
-            </select>
+        {isAdmin && (
+          <div className="row2">
+            <div><label>Delivery fee (₦)</label><input type="number" min="0" value={deliveryFee} onChange={e => setDeliveryFee(e.target.value)} /></div>
+            <div><label>Payment status</label>
+              <select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)}>
+                <option value="Unpaid">Unpaid</option>
+                <option value="Partial">Partial</option>
+                <option value="Paid">Paid</option>
+              </select>
+            </div>
           </div>
-        </div>
+        )}
         {giftProduct && (
           <>
             <label>Free gift: {giftProduct.name} ({giftProduct.stock_quantity ?? 0} in stock) — quantity to send</label>
@@ -452,6 +454,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [showExportPicker, setShowExportPicker] = useState(false);
   const [requestingCorrection, setRequestingCorrection] = useState(null);
   const [addingUpsellTo, setAddingUpsellTo] = useState(null);
+  const [confirmDeleteOrder, setConfirmDeleteOrder] = useState(null);
   const [viewingPerson, setViewingPerson] = useState(null);
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
   const [todayOnly, setTodayOnly] = useState(false);
@@ -588,6 +591,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     }
     if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
       await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
+      await recordFreeCommissionForOrder({ id });
+    }
+    if (patch.status === 'Cancelled') {
+      await supabase.rpc('cancel_upsells_for_order', { p_order_id: id });
     }
     refresh();
   }
@@ -596,6 +603,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed — marked as Paid.' });
     await recordCommissionForOrder(o);
+    await recordFreeCommissionForOrder(o);
     await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
     refresh();
   }
@@ -613,8 +621,20 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages), 'Order info copied');
+    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id]), 'Order info copied');
     setActionsOpenFor(null);
+  }
+
+  async function withdrawUpsell(u) {
+    const { error } = await supabase.rpc('withdraw_upsell', { p_upsell_id: u.id });
+    if (error) { alert(error.message); return; }
+    refresh();
+  }
+
+  async function deleteOrder(o) {
+    await supabase.from('orders').delete().eq('id', o.id);
+    setConfirmDeleteOrder(null);
+    refresh();
   }
 
   return (
@@ -703,6 +723,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {upsellsByOrder[o.id].map(u => (
                         <div key={u.id} style={{ fontSize: '10.5px', background: '#EAF4F1', color: '#1F4D44', borderRadius: '10px', padding: '2px 8px', display: 'inline-block', marginRight: '4px', marginBottom: '2px' }}>
                           ⬆ +{u.additional_quantity} {prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · {u.commission_status}
+                          {u.commission_status === 'Pending' && (isAdmin || u.staff_id === myId) && (
+                            <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(u)}>Withdraw</span></>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -775,6 +798,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
                       )}
+                      {isAdmin && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px', color: '#B0483F', borderTop: '1px solid #F0EEE8', marginTop: '4px' }} onClick={() => { setConfirmDeleteOrder(o); setActionsOpenFor(null); }}>Delete order permanently</div>
+                      )}
                     </div>
                   )}
                 </td>
@@ -788,8 +814,23 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
       {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {confirmDeleteOrder && (
+        <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3>Delete order permanently?</h3>
+            <p style={{ fontSize: '13px', color: '#4B5566' }}>
+              This permanently deletes the order for <strong>{confirmDeleteOrder.customer}</strong> ({confirmDeleteOrder.id.slice(0, 8)}) and everything tied to it —
+              history, upsells, and commission records. This can't be undone.
+            </p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setConfirmDeleteOrder(null)}>Cancel</button>
+              <button className="btn" style={{ background: '#B0483F', color: '#fff', borderColor: '#B0483F' }} onClick={() => deleteOrder(confirmDeleteOrder)}>Yes, delete permanently</button>
+            </div>
+          </div>
+        </div>
+      )}
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
-      {historyOrder && <OrderHistoryModal order={historyOrder} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
+      {historyOrder && <OrderHistoryModal order={historyOrder} products={products} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
@@ -889,12 +930,17 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
 function DeliveryFeeCell({ order, onSave }) {
   const [value, setValue] = useState(order.delivery_fee || '');
   const [editing, setEditing] = useState(false);
+  const locked = order.status === 'Delivered';
 
   if (!editing) {
     return (
       <div>
         <span style={{ fontSize: '13px' }}>₦{Number(order.delivery_fee || 0).toLocaleString()}</span>{' '}
-        <button className="link-btn" onClick={() => setEditing(true)} style={{ fontSize: '11px' }}>Edit</button>
+        {locked ? (
+          <span style={{ fontSize: '10.5px', color: '#8A93A0' }}>Locked</span>
+        ) : (
+          <button className="link-btn" onClick={() => setEditing(true)} style={{ fontSize: '11px' }}>Edit</button>
+        )}
       </div>
     );
   }
@@ -966,6 +1012,10 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
     }
     if (status === 'Delivered' || paidNow) {
       await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
+      await recordFreeCommissionForOrder(o);
+    }
+    if (status === 'Cancelled') {
+      await supabase.rpc('cancel_upsells_for_order', { p_order_id: o.id });
     }
     setStatusChanging(null);
     refresh();
@@ -975,6 +1025,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
     await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed by dispatch — marked as Paid.' });
     await recordCommissionForOrder(o);
+    await recordFreeCommissionForOrder(o);
     await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
     refresh();
   }
@@ -987,7 +1038,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages), 'Order info copied');
+    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id]), 'Order info copied');
   }
 
   return (
@@ -1032,13 +1083,18 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                   )}
                 </td>
                 <td style={{ fontWeight: 600 }}>
-                  ₦{(
-                    (o.quantity || 1) * Number(o.unit_price || 0)
-                    + ((upsellsByOrder && upsellsByOrder[o.id]) || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status)).reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0)
-                  ).toLocaleString()}
-                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
-                    <div style={{ fontSize: '10px', color: '#8A93A0', fontWeight: 400 }}>includes upsell</div>
-                  )}
+                  {(() => {
+                    const activeUpsells = ((upsellsByOrder && upsellsByOrder[o.id]) || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status));
+                    const originalAmount = (o.quantity || 1) * Number(o.unit_price || 0);
+                    const upsellAmount = activeUpsells.reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0);
+                    return (
+                      <>
+                        <div>Original: ₦{originalAmount.toLocaleString()}</div>
+                        {activeUpsells.length > 0 && <div style={{ color: '#2E6E62' }}>Upsell: ₦{upsellAmount.toLocaleString()}</div>}
+                        {activeUpsells.length > 0 && <div style={{ fontSize: '11px', color: '#8A93A0', fontWeight: 400, marginTop: '2px' }}>Total to collect: ₦{(originalAmount + upsellAmount).toLocaleString()}</div>}
+                      </>
+                    );
+                  })()}
                 </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
                 <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
@@ -1148,6 +1204,17 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
   const [viewingPerson, setViewingPerson] = useState(null);
   const staffList = profiles.filter(p => p.role !== 'admin');
   const isSubmitterRole = ['manager', 'logistics', 'marketer'].includes(role);
+  const [roleTab, setRoleTab] = useState('all');
+  const ROLE_TABS = [
+    { key: 'all', label: 'All' },
+    { key: 'staff', label: 'Staff' },
+    { key: 'dispatch', label: 'Dispatch' },
+    { key: 'manager', label: 'Manager' },
+    { key: 'logistics', label: 'Logistics' },
+    { key: 'marketer', label: 'Marketer' },
+    { key: 'inventory', label: 'Inventory' },
+  ];
+  const visibleStaffList = roleTab === 'all' ? staffList : staffList.filter(s => s.role === roleTab);
 
   function toggleIn(id, list, setList) {
     setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
@@ -1217,8 +1284,16 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     <div>
       <div className="topbar"><div><h1 className="page-title">Team</h1><p className="page-sub">Create a real login for each person — staff, dispatch, managers, or inventory. They can sign in with either their email or a username.</p></div></div>
 
+      <div className="product-tabs">
+        {ROLE_TABS.map(t => {
+          const count = t.key === 'all' ? staffList.length : staffList.filter(s => s.role === t.key).length;
+          if (t.key !== 'all' && count === 0) return null;
+          return <span key={t.key} className={'ptab' + (roleTab === t.key ? ' active' : '')} onClick={() => setRoleTab(t.key)}>{t.label} ({count})</span>;
+        })}
+      </div>
+
       <div className="list-manage" style={{ marginBottom: '18px' }}>
-        {staffList.map(s => {
+        {visibleStaffList.map(s => {
           const load = orders.filter(o => (s.role === 'staff' ? o.staff_id : s.role === 'dispatch' ? o.dispatch_id : o.created_by) === s.id).length;
           return (
             <div key={s.id} className="list-manage-row">
@@ -1245,7 +1320,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
             </div>
           );
         })}
-        {staffList.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No one added yet.</div>}
+        {visibleStaffList.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No one in this category yet.</div>}
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', maxWidth: '440px' }}>

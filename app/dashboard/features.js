@@ -76,16 +76,19 @@ export async function reverseCommissionForOrder(orderId) {
   await supabase.from('commission_ledger').update({ reversed: true }).eq('order_id', orderId).eq('reversed', false);
 }
 
-export async function ensureFreeCommission(staffId) {
+export async function recordFreeCommissionForOrder(order) {
+  const { data: fresh } = await supabase.from('orders').select('*').eq('id', order.id).maybeSingle();
+  if (!fresh || !fresh.staff_id) return;
+  if (fresh.status !== 'Delivered' || fresh.payment_status !== 'Paid') return;
   const { data: rule } = await supabase.from('free_commission_rules').select('*').eq('active', true).limit(1).maybeSingle();
   if (!rule || !rule.amount || rule.amount <= 0) return;
-  const isEligible = !rule.eligible_staff || rule.eligible_staff.length === 0 || rule.eligible_staff.includes(staffId);
+  const isEligible = !rule.eligible_staff || rule.eligible_staff.length === 0 || rule.eligible_staff.includes(fresh.staff_id);
   if (!isEligible) return;
-  const cycleStart = getCycleStart(new Date());
-  const { data: existing } = await supabase.from('commission_ledger').select('id').eq('staff_id', staffId).eq('commission_type', 'free').eq('cycle_start', cycleStart).maybeSingle();
-  if (existing) return;
+  const { data: existing } = await supabase.from('commission_ledger').select('id').eq('order_id', fresh.id).eq('commission_type', 'free').maybeSingle();
+  if (existing) return; // already credited for this order
   await supabase.from('commission_ledger').insert({
-    staff_id: staffId, product_id: null, amount: rule.amount, commission_type: 'free', cycle_start: cycleStart,
+    order_id: fresh.id, staff_id: fresh.staff_id, product_id: null, amount: rule.amount,
+    commission_type: 'free', cycle_start: getCycleStart(new Date()),
   });
 }
 
@@ -119,25 +122,44 @@ export async function copyToClipboard(text, label) {
   return ok;
 }
 
-export function buildOrderSummary(order, products, packages) {
+export function buildOrderSummary(order, products, packages, upsells) {
   const product = (products || []).find(p => p.id === order.product_id);
   const pkg = order.package_id ? (packages || []).find(p => p.id === order.package_id) : null;
   const gift = pkg && pkg.gift_product_id ? (products || []).find(p => p.id === pkg.gift_product_id) : null;
+  const activeUpsells = (upsells || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status));
+  const originalTotal = (order.quantity || 1) * Number(order.unit_price || 0);
+  const upsellTotal = activeUpsells.reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0);
+
   const lines = [
     `Order: ${order.id}`,
     `Created: ${new Date(order.created_at).toLocaleString()}`,
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
-    `Product: ${product ? product.name : '—'} × ${order.quantity || 1}`,
+    '',
+    'ORIGINAL ORDER (locked)',
+    `${product ? product.name : '—'} × ${order.quantity || 1} — ₦${Number(order.unit_price || 0).toLocaleString()} each = ₦${originalTotal.toLocaleString()}`,
     pkg ? `Package: ${pkg.name}` : null,
     gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
+  ];
+
+  if (activeUpsells.length > 0) {
+    lines.push('', 'UPSELL(S)');
+    activeUpsells.forEach(u => {
+      const upsellProduct = (products || []).find(p => p.id === u.upsell_product_id);
+      lines.push(`+${u.additional_quantity} ${upsellProduct ? upsellProduct.name : '—'} — ₦${Number(u.unit_price || 0).toLocaleString()} each = ₦${Number(u.upsell_amount || 0).toLocaleString()} (${u.commission_status})`);
+    });
+    lines.push('', `CURRENT TOTAL: ₦${(originalTotal + upsellTotal).toLocaleString()}`);
+  }
+
+  lines.push(
+    '',
     `Status: ${order.status}`,
     `Payment: ${order.payment_status || 'Unpaid'}`,
     order.priority === 'High' ? 'Priority: HIGH' : null,
     order.preferred_time ? `Preferred time: ${order.preferred_time}` : null,
     order.notes ? `Notes: ${order.notes}` : null,
-  ].filter(Boolean);
-  return lines.join('\n');
+  );
+  return lines.filter(l => l !== null).join('\n');
 }
 
 export function orderTotal(o) {
@@ -1184,7 +1206,7 @@ export function ProductPackagesModal({ product, products, onClose }) {
 }
 
 
-export function InventoryPage({ products, orders, refresh }) {
+export function InventoryPage({ products, orders, profiles, agentStock, refresh }) {
   const [exactEdits, setExactEdits] = useState({});
   const [addAmounts, setAddAmounts] = useState({});
 
@@ -1266,20 +1288,61 @@ export function InventoryPage({ products, orders, refresh }) {
           {products.length === 0 && <tr><td colSpan="5" className="empty">Add products first.</td></tr>}
         </tbody>
       </table>
+
+      {profiles && agentStock && (() => {
+        const dispatchList = profiles.filter(p => p.role === 'dispatch');
+        if (dispatchList.length === 0) return null;
+        const byState = {};
+        dispatchList.forEach(d => {
+          const key = d.state || 'No state set';
+          if (!byState[key]) byState[key] = [];
+          byState[key].push(d);
+        });
+        return (
+          <>
+            <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 6px' }}>Agent stock, by state</h3>
+            <p style={{ fontSize: '12px', color: '#8A93A0', marginBottom: '14px' }}>What every dispatch partner is currently holding, grouped by state — useful when a state has more than one agent.</p>
+            {Object.entries(byState).map(([state, agents]) => (
+              <div key={state} style={{ marginBottom: '20px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>{state}{agents.length > 1 ? ` (${agents.length} agents)` : ''}</div>
+                <table>
+                  <thead><tr><th>Agent</th>{products.map(p => <th key={p.id}>{p.name}</th>)}</tr></thead>
+                  <tbody>
+                    {agents.map(a => (
+                      <tr key={a.id}>
+                        <td>{a.full_name}</td>
+                        {products.map(p => {
+                          const row = agentStock.find(s => s.agent_id === a.id && s.product_id === p.id);
+                          return <td key={p.id}>{row ? row.quantity : 0}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </>
+        );
+      })()}
     </div>
   );
 }
 
 // ---------- Order history / remarks ----------
-export function OrderHistoryModal({ order, profile, onClose, onLogged }) {
+export function OrderHistoryModal({ order, products, profile, onClose, onLogged }) {
   const [events, setEvents] = useState([]);
+  const [upsells, setUpsells] = useState([]);
   const [loading, setLoading] = useState(true);
   const [remark, setRemark] = useState('');
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from('order_events').select('*').eq('order_id', order.id).order('created_at', { ascending: false });
+      const [{ data }, { data: up }] = await Promise.all([
+        supabase.from('order_events').select('*').eq('order_id', order.id).order('created_at', { ascending: false }),
+        supabase.from('upsells').select('*').eq('original_order_id', order.id).order('created_at', { ascending: false }),
+      ]);
       setEvents(data || []);
+      setUpsells(up || []);
       setLoading(false);
     })();
   }, [order.id]);
@@ -1292,11 +1355,23 @@ export function OrderHistoryModal({ order, profile, onClose, onLogged }) {
     setEvents(data || []);
     if (onLogged) onLogged();
   }
+  const prodName = id => id ? ((products || []).find(p => p.id === id) || {}).name || '—' : '—';
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Order history · {order.customer}</h3>
+        {upsells.length > 0 && (
+          <div style={{ marginBottom: '14px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: '#8A93A0', marginBottom: '6px' }}>UPSELLS ON THIS ORDER</div>
+            {upsells.map(u => (
+              <div key={u.id} style={{ fontSize: '12.5px', background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '6px', padding: '8px 10px', marginBottom: '6px' }}>
+                +{u.additional_quantity} {prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · <span style={{ color: '#8A93A0' }}>{u.commission_status}</span>
+                <div style={{ fontSize: '10.5px', color: '#8A93A0' }}>{new Date(u.created_at).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
         <label style={{ marginTop: 0 }}>Add a remark</label>
         <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="e.g. Customer asked to deliver after 5pm" />
         <div style={{ textAlign: 'right', marginTop: '8px' }}>
@@ -1414,7 +1489,6 @@ export function CommissionPage({ profile, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    await ensureFreeCommission(profile.id);
     const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
@@ -1473,7 +1547,7 @@ export function CommissionPage({ profile, orders, products, session }) {
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginBottom: '6px', letterSpacing: '.5px' }}>YOUR UNCLAIMED BALANCE</div>
         <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '42px', fontWeight: 700 }}>₦{balance.toLocaleString()}</div>
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginTop: '6px' }}>₦{thisWeekTotal.toLocaleString()} earned this week so far</div>
-        {freeTotal > 0 && <div style={{ fontSize: '11.5px', opacity: 0.75, marginTop: '2px' }}>Includes ₦{freeTotal.toLocaleString()} in free commission, no orders required</div>}
+        {freeTotal > 0 && <div style={{ fontSize: '11.5px', opacity: 0.75, marginTop: '2px' }}>Includes ₦{freeTotal.toLocaleString()} in per-order bonus commission</div>}
         <div style={{ marginTop: '18px' }}>
           {balance <= 0 ? (
             <span style={{ fontSize: '12.5px', opacity: 0.75 }}>Deliver more Paid orders to start earning towards your next claim.</span>
@@ -1568,9 +1642,6 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
     setProductRules(ruleMap);
     if (freeRule) {
       setFreeActive(freeRule.active); setFreeAmount(freeRule.amount); setFreeEligible(freeRule.eligible_staff || []);
-      if (freeRule.active) {
-        await Promise.all(staffList.map(s => ensureFreeCommission(s.id)));
-      }
     }
     const [{ data: led }, { data: cl }] = await Promise.all([
       supabase.from('commission_ledger').select('*'),
@@ -1623,11 +1694,11 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
         <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 0, fontWeight: 600 }}>
-          Free commission (flat, regardless of performance)
+          Commission earned per delivered order
           <span><input type="checkbox" checked={freeActive} onChange={e => setFreeActive(e.target.checked)} /> On</span>
         </label>
-        <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>A separate rule from product commission — every eligible staff member gets this amount added automatically, once per cycle, no order required.</p>
-        <label className="field-label">Amount per cycle (₦)</label>
+        <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>A flat bonus credited automatically every time one of an eligible staff member's orders is marked Delivered and Paid — separate from any product-specific commission.</p>
+        <label className="field-label">Amount per delivered &amp; paid order (₦)</label>
         <input type="number" min="0" value={freeAmount} onChange={e => setFreeAmount(e.target.value)} disabled={!freeActive} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }} />
         <label className="field-label">Who's eligible?</label>
         <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '140px', overflowY: 'auto', marginBottom: '10px' }}>
@@ -1900,7 +1971,7 @@ export function CorrectionsPage({ profile, session, refresh }) {
   );
 }
 
-export function UpsellRulesPage({ products, packages }) {
+export function UpsellRulesPage({ products, packages, profiles }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
@@ -1940,12 +2011,12 @@ export function UpsellRulesPage({ products, packages }) {
           </tbody>
         </table>
       )}
-      {editing && <UpsellRuleModal rule={editing} products={products} packages={packages} onClose={() => { setEditing(null); load(); }} />}
+      {editing && <UpsellRuleModal rule={editing} products={products} packages={packages} profiles={profiles} onClose={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
 
-function UpsellRuleModal({ rule, products, packages, onClose }) {
+function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
   const isNew = !rule.id;
   const [originalProductId, setOriginalProductId] = useState(rule.original_product_id || '');
   const [originalPackageId, setOriginalPackageId] = useState(rule.original_package_id || '');
@@ -1956,9 +2027,12 @@ function UpsellRuleModal({ rule, products, packages, onClose }) {
   const [active, setActive] = useState(rule.active !== false);
   const [effectiveStart, setEffectiveStart] = useState(rule.effective_start || new Date().toISOString().slice(0, 10));
   const [effectiveEnd, setEffectiveEnd] = useState(rule.effective_end || '');
+  const [eligibleStaff, setEligibleStaff] = useState(rule.eligible_staff || []);
 
   const originalPackages = originalProductId ? packages.filter(p => p.product_id === originalProductId) : [];
   const upsellPackages = upsellProductId ? packages.filter(p => p.product_id === upsellProductId) : [];
+  const staffList = (profiles || []).filter(p => p.role === 'staff');
+  function toggleStaff(id) { setEligibleStaff(eligibleStaff.includes(id) ? eligibleStaff.filter(x => x !== id) : [...eligibleStaff, id]); }
 
   async function save() {
     const payload = {
@@ -1966,6 +2040,7 @@ function UpsellRuleModal({ rule, products, packages, onClose }) {
       upsell_product_id: upsellProductId || null, upsell_package_id: upsellPackageId || null,
       commission_type: commissionType, commission_value: parseFloat(commissionValue) || 0,
       active, effective_start: effectiveStart, effective_end: effectiveEnd || null,
+      eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
     };
     if (isNew) {
       await supabase.from('upsell_commission_rules').insert(payload);
@@ -2023,6 +2098,17 @@ function UpsellRuleModal({ rule, products, packages, onClose }) {
           <div><label>Effective from</label><input type="date" value={effectiveStart} onChange={e => setEffectiveStart(e.target.value)} /></div>
           <div><label>Effective until (optional)</label><input type="date" value={effectiveEnd} onChange={e => setEffectiveEnd(e.target.value)} /></div>
         </div>
+        <label>Which staff can earn this rule?</label>
+        <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '140px', overflowY: 'auto', marginBottom: '10px' }}>
+          {staffList.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No staff added yet.</p>}
+          {staffList.map(s => (
+            <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+              <input type="checkbox" checked={eligibleStaff.includes(s.id)} onChange={() => toggleStaff(s.id)} />
+              {s.full_name}
+            </label>
+          ))}
+        </div>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-6px', marginBottom: '10px' }}>Leave all unchecked to make every staff member eligible for this rule.</p>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} /> Active
         </label>
@@ -2039,6 +2125,7 @@ function UpsellRuleModal({ rule, products, packages, onClose }) {
 
 export function UpsellsPage({ products, packages, profiles }) {
   const [upsells, setUpsells] = useState([]);
+  const [ordersById, setOrdersById] = useState({});
   const [loading, setLoading] = useState(true);
   const [cancelReason, setCancelReason] = useState({});
   const [holdReason, setHoldReason] = useState({});
@@ -2048,6 +2135,13 @@ export function UpsellsPage({ products, packages, profiles }) {
   async function load() {
     const { data } = await supabase.from('upsells').select('*').order('created_at', { ascending: false });
     setUpsells(data || []);
+    const orderIds = [...new Set((data || []).map(u => u.original_order_id))];
+    if (orderIds.length > 0) {
+      const { data: orderRows } = await supabase.from('orders').select('*').in('id', orderIds);
+      const map = {};
+      (orderRows || []).forEach(o => { map[o.id] = o; });
+      setOrdersById(map);
+    }
     setLoading(false);
   }
   const prodName = id => id ? (products.find(p => p.id === id) || {}).name || '—' : '—';
@@ -2087,11 +2181,16 @@ export function UpsellsPage({ products, packages, profiles }) {
         <>
           <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Waiting for your approval ({pendingApproval.length})</h3>
           <table style={{ marginBottom: '24px' }}>
-            <thead><tr><th>Order</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th></th></tr></thead>
+            <thead><tr><th>Order details</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th></th></tr></thead>
             <tbody>
-              {pendingApproval.map(u => (
+              {pendingApproval.map(u => {
+                const ord = ordersById[u.original_order_id];
+                return (
                 <tr key={u.id}>
-                  <td className="oid">{u.original_order_id.slice(0, 8)}</td>
+                  <td>
+                    <span className="oid">{u.original_order_id.slice(0, 8)}</span>
+                    {ord && <div style={{ fontSize: '12px' }}>{ord.customer}<div style={{ color: '#8A93A0' }}>{ord.phone}{ord.address ? ` · ${ord.address}` : ''}</div></div>}
+                  </td>
                   <td>{staffName(u.staff_id)}</td>
                   <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
                   <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
@@ -2107,7 +2206,7 @@ export function UpsellsPage({ products, packages, profiles }) {
                     <button className="btn" disabled={busy === u.id} onClick={() => hold(u)}>Hold</button>
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </>
@@ -2115,12 +2214,17 @@ export function UpsellsPage({ products, packages, profiles }) {
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>All upsells</h3>
       <table>
-        <thead><tr><th>Order</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Order details</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>Status</th><th></th></tr></thead>
         <tbody>
           {upsells.length === 0 && <tr><td colSpan="7" className="empty">No upsells created yet.</td></tr>}
-          {upsells.map(u => (
+          {upsells.map(u => {
+            const ord = ordersById[u.original_order_id];
+            return (
             <tr key={u.id}>
-              <td className="oid">{u.original_order_id.slice(0, 8)}</td>
+              <td>
+                <span className="oid">{u.original_order_id.slice(0, 8)}</span>
+                {ord && <div style={{ fontSize: '12px' }}>{ord.customer}<div style={{ color: '#8A93A0' }}>{ord.phone}{ord.address ? ` · ${ord.address}` : ''}</div></div>}
+              </td>
               <td>{staffName(u.staff_id)}</td>
               <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
               <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
@@ -2140,7 +2244,7 @@ export function UpsellsPage({ products, packages, profiles }) {
                 )}
               </td>
             </tr>
-          ))}
+          );})}
         </tbody>
       </table>
     </div>
