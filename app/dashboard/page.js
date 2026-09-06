@@ -637,7 +637,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             </button>
           )}
           {isAdmin && <button className="btn" onClick={() => setShowExportPicker(!showExportPicker)}>⬇ Export backup (CSV)</button>}
-          {(isAdmin || myRole === 'staff') && <button className="btn primary" onClick={() => setShowNew(true)}>+ New order</button>}
+          {(isAdmin || (myRole === 'staff' && profile?.can_create_orders !== false)) && <button className="btn primary" onClick={() => setShowNew(true)}>+ New order</button>}
         </div>
       </div>
 
@@ -732,7 +732,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
                       <select className="status-sel" value={o.status} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
-                        {STATUSES.filter(s => s !== 'New' || o.status === 'New').map(s => <option key={s} value={s}>{s}</option>)}
+                        {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     ) : <span className={'pill ' + o.status}>{o.status}</span>}
                     {o.priority === 'High' && <span className="pill Cancelled">High</span>}
@@ -1010,7 +1010,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
       </div>
       {filtered.length === 0 ? <div className="empty">No deliveries here yet.</div> : (
         <table>
-          <thead><tr><th>Order</th><th>Product & package</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th>Last updated</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>Total to collect</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th>Last updated</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
@@ -1029,6 +1029,15 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                         </div>
                       ))}
                     </div>
+                  )}
+                </td>
+                <td style={{ fontWeight: 600 }}>
+                  ₦{(
+                    (o.quantity || 1) * Number(o.unit_price || 0)
+                    + ((upsellsByOrder && upsellsByOrder[o.id]) || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status)).reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0)
+                  ).toLocaleString()}
+                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
+                    <div style={{ fontSize: '10px', color: '#8A93A0', fontWeight: 400 }}>includes upsell</div>
                   )}
                 </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
@@ -1193,8 +1202,13 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     refresh();
   }
 
-  async function saveAccess(id, productList, sectionList) {
-    await supabase.from('profiles').update({ allowed_products: productList, allowed_sections: sectionList.length > 0 ? sectionList : null }).eq('id', id);
+  async function saveAccess(id, productList, sectionList, canCreateOrders, allowedStatuses) {
+    await supabase.from('profiles').update({
+      allowed_products: productList,
+      allowed_sections: sectionList.length > 0 ? sectionList : null,
+      can_create_orders: canCreateOrders,
+      allowed_statuses: allowedStatuses && allowedStatuses.length > 0 ? allowedStatuses : null,
+    }).eq('id', id);
     setEditingAccess(null);
     refresh();
   }
@@ -1303,9 +1317,13 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
 function EditAccessModal({ person, products, onClose, onSave }) {
   const [productList, setProductList] = useState(person.allowed_products || []);
   const [sectionList, setSectionList] = useState(person.allowed_sections || []);
+  const [canCreateOrders, setCanCreateOrders] = useState(person.can_create_orders !== false);
+  const [allowedStatuses, setAllowedStatuses] = useState(person.allowed_statuses || []);
   const isSubmitter = ['manager', 'logistics', 'marketer'].includes(person.role);
+  const isStaff = person.role === 'staff';
   function toggleProduct(id) { setProductList(productList.includes(id) ? productList.filter(x => x !== id) : [...productList, id]); }
   function toggleSection(key) { setSectionList(sectionList.includes(key) ? sectionList.filter(x => x !== key) : [...sectionList, key]); }
+  function toggleStatus(s) { setAllowedStatuses(allowedStatuses.includes(s) ? allowedStatuses.filter(x => x !== s) : [...allowedStatuses, s]); }
   return (
     <div className="modal" onClick={e => e.stopPropagation()}>
       <h3>Access · {person.full_name}</h3>
@@ -1323,7 +1341,27 @@ function EditAccessModal({ person, products, onClose, onSave }) {
           <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to give access to every product.</p>
         </>
       )}
-      <label style={{ marginTop: isSubmitter ? '14px' : 0 }}>Extra section access</label>
+      {isStaff && (
+        <>
+          <label style={{ marginTop: isSubmitter ? '14px' : 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            Can create new orders
+            <span><input type="checkbox" checked={canCreateOrders} onChange={e => setCanCreateOrders(e.target.checked)} /></span>
+          </label>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>Turn off to stop this staff member from adding new orders — they can still work with orders assigned to them.</p>
+
+          <label style={{ marginTop: '14px' }}>Which statuses can they set an order to?</label>
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+            {STATUSES.map(s => (
+              <label key={s} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                <input type="checkbox" checked={allowedStatuses.includes(s)} onChange={() => toggleStatus(s)} />
+                {s}
+              </label>
+            ))}
+          </div>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to allow every status (New still can't be re-selected once confirmed).</p>
+        </>
+      )}
+      <label style={{ marginTop: (isSubmitter || isStaff) ? '14px' : 0 }}>Extra section access</label>
       <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
         {APP_SECTIONS.map(sec => (
           <label key={sec.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
@@ -1335,7 +1373,7 @@ function EditAccessModal({ person, products, onClose, onSave }) {
       <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave unchecked for their role's normal default access.</p>
       <div className="modal-actions">
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={() => onSave(person.id, productList, sectionList)}>Save access</button>
+        <button className="btn primary" onClick={() => onSave(person.id, productList, sectionList, canCreateOrders, allowedStatuses)}>Save access</button>
       </div>
     </div>
   );
