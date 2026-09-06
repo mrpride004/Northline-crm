@@ -1,21 +1,48 @@
 'use client';
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
   { key: 'products', label: 'Products' },
   { key: 'inventory', label: 'Inventory' },
-  { key: 'agentstock', label: 'Agent stock' },
   { key: 'team', label: 'Team' },
   { key: 'reports', label: 'Reports' },
   { key: 'settings', label: 'Settings' },
   { key: 'commission', label: 'Commission' },
 ];
 
-export default function Dashboard() {
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error('Dashboard render error (data is safe, this is a display-only issue):', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', padding: '24px', textAlign: 'center', background: '#F6F4EF' }}>
+          <div style={{ fontSize: '32px', marginBottom: '8px' }}>⚠</div>
+          <h2 style={{ marginBottom: '10px', fontFamily: "'Source Serif 4', Georgia, serif" }}>Something went wrong showing this page</h2>
+          <p style={{ color: '#8A93A0', marginBottom: '18px', maxWidth: '380px', fontSize: '14px' }}>
+            Your data is safe — nothing was deleted. This is just a display problem, and reloading almost always fixes it.
+          </p>
+          <button className="btn primary" onClick={() => window.location.reload()}>Reload the page</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function DashboardInner() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState(null);
@@ -43,6 +70,7 @@ export default function Dashboard() {
       const { data: p } = await supabase.from('profiles').select('*').eq('id', s.user.id).single();
       setProfile(p);
       await refreshAll();
+      silentlyRelinkPush(s);
       if (p && p.role === 'admin') {
         try {
           const res = await fetch('/api/team-status', {
@@ -126,6 +154,26 @@ export default function Dashboard() {
     return () => { supabase.removeChannel(channel); };
   }, [profile, session]);
 
+  const hasCheckedNewInfo = useRef(false);
+  useEffect(() => {
+    if (!profile || orders.length === 0 || hasCheckedNewInfo.current) return;
+    hasCheckedNewInfo.current = true;
+    const mine = profile.role === 'admin' ? orders
+      : profile.role === 'staff' ? orders.filter(o => o.staff_id === profile.id || !o.staff_id)
+      : profile.role === 'dispatch' ? orders.filter(o => o.dispatch_id === profile.id)
+      : orders.filter(o => o.created_by === profile.id);
+    const myActive = mine.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length;
+    const key = 'lastActiveCount_' + profile.id;
+    const prev = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
+    if (prev !== null) {
+      const diff = myActive - parseInt(prev, 10);
+      if (diff > 0) {
+        setTimeout(() => showOrderAlert(`📋 ${diff} new since you were last here`), 600);
+      }
+    }
+    if (typeof window !== 'undefined') window.localStorage.setItem(key, String(myActive));
+  }, [profile, orders]);
+
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
     const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }] = await Promise.all([
@@ -166,6 +214,22 @@ export default function Dashboard() {
     router.replace('/login');
   }
 
+  useEffect(() => {
+    if (!profile) return;
+    const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;
+    let timer = setTimeout(signOut, INACTIVITY_LIMIT_MS);
+    function resetTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(signOut, INACTIVITY_LIMIT_MS);
+    }
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach(e => window.addEventListener(e, resetTimer, { passive: true }));
+    return () => {
+      clearTimeout(timer);
+      events.forEach(e => window.removeEventListener(e, resetTimer));
+    };
+  }, [profile]);
+
   if (loading) return <div className="loading">Loading your workspace…</div>;
   if (!profile) return <div className="loading">Your account has no role assigned yet. Ask your admin to set one in Supabase.</div>;
 
@@ -184,7 +248,6 @@ export default function Dashboard() {
     { key: 'orders', label: 'All orders', count: orders.length },
     { key: 'products', label: 'Products' },
     { key: 'inventory', label: 'Inventory' },
-    { key: 'agentstock', label: 'Agent stock' },
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
@@ -194,11 +257,10 @@ export default function Dashboard() {
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
     { key: 'commission', label: 'My Commission' },
   ] : profile.role === 'dispatch' ? [
-    { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status === 'Dispatched').length },
+    { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     { key: 'mystock', label: 'My stock' },
   ] : isInventoryManager ? [
     { key: 'dashboard', label: 'Inventory' },
-    { key: 'agentstock', label: 'Agent stock' },
   ] : [
     { key: 'dashboard', label: 'Submit orders' },
   ];
@@ -245,8 +307,7 @@ export default function Dashboard() {
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
-        {isAdmin && page === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
-        {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
+        {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
@@ -261,10 +322,17 @@ export default function Dashboard() {
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
 
-        {isInventoryManager && page === 'dashboard' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
-        {isInventoryManager && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
+        {isInventoryManager && page === 'dashboard' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
       </div>
     </div>
+  );
+}
+
+export default function Dashboard() {
+  return (
+    <ErrorBoundary>
+      <DashboardInner />
+    </ErrorBoundary>
   );
 }
 
@@ -524,6 +592,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [confirmDeleteOrder, setConfirmDeleteOrder] = useState(null);
   const [viewingPerson, setViewingPerson] = useState(null);
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 25;
   const [todayOnly, setTodayOnly] = useState(false);
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
@@ -539,7 +609,12 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         return o.id.toLowerCase().includes(q) || (o.customer || '').toLowerCase().includes(q) || (o.phone || '').toLowerCase().includes(q);
       })
     : bySubmitted;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const usedStates = [...new Set(orders.map(o => o.state).filter(Boolean))].sort();
+
+  useEffect(() => { setCurrentPage(1); }, [search, activeProduct, activeState, statusTab, submittedOnly, todayOnly]);
   const staffSubmittedCount = orders.filter(o => o.created_by).length;
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const personName = id => (profiles.find(s => s.id === id) || {}).full_name || '—';
@@ -786,7 +861,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <table>
           <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Dates</th><th></th></tr></thead>
           <tbody>
-            {filtered.map(o => (
+            {paginated.map(o => (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
@@ -796,7 +871,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                     const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
                     return (
                       <>
-                        {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
+                        {prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}
                         <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
                         {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                         {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
@@ -867,7 +942,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && (
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setAddingUpsellTo(o); setActionsOpenFor(null); }}>Change package</div>
                       )}
                       {isAdmin && (
@@ -895,6 +970,19 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             ))}
           </tbody>
         </table>
+      )}
+
+      {filtered.length > PAGE_SIZE && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '14px' }}>
+          <span style={{ fontSize: '12.5px', color: '#8A93A0' }}>
+            Showing {((safePage - 1) * PAGE_SIZE) + 1}–{Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </span>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button className="btn" disabled={safePage <= 1} onClick={() => setCurrentPage(safePage - 1)}>← Previous</button>
+            <span style={{ fontSize: '12.5px', color: '#8A93A0' }}>Page {safePage} of {totalPages}</span>
+            <button className="btn" disabled={safePage >= totalPages} onClick={() => setCurrentPage(safePage + 1)}>Next →</button>
+          </div>
+        </div>
       )}
 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
@@ -1150,7 +1238,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
         <>
         <div className="desktop-only">
         <table>
-          <thead><tr><th>Order</th><th>Product & package</th><th>To collect</th><th>Customer & delivery</th><th>Status</th><th>Payment</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>To collect</th><th>Delivery fee</th><th>Customer & delivery</th><th>Status</th><th>Payment</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => {
               const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
@@ -1159,17 +1247,15 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
               <tr key={o.id}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
+                  {prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
                   {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                   {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
                   {current.changed && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⬆ Package changed — deliver this</div>}
                 </td>
-                <td style={{ fontWeight: 600 }}>
-                  <div>₦{current.amount.toLocaleString()}</div>
-                  <div style={{ fontWeight: 400, marginTop: '4px' }}><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></div>
-                </td>
+                <td style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</td>
+                <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
                 <td>
                   {o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>
                   <div style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '2px' }}>{o.address || '—'}</div>
@@ -1192,7 +1278,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                       style={{ backgroundColor: statusRowColor(o.status), fontWeight: 600, border: 'none' }}
                       onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}
                     >
-                      {STATUSES.filter(s => s !== 'New').map(s => <option key={s} value={s}>{s}</option>)}
+                      {STATUSES.filter(s => s !== 'New' && (s !== 'Confirmed' || o.status === 'Confirmed')).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   )}
                   <div style={{ marginTop: '8px' }}><button className="link-btn" onClick={() => copyOrderInfo(o)}>Copy info</button></div>
@@ -1235,11 +1321,11 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                       style={{ backgroundColor: statusRowColor(o.status), fontWeight: 600, border: 'none' }}
                       onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}
                     >
-                      {STATUSES.filter(s => s !== 'New').map(s => <option key={s} value={s}>{s}</option>)}
+                      {STATUSES.filter(s => s !== 'New' && (s !== 'Confirmed' || o.status === 'Confirmed')).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   )}
                 </div>
-                <div style={{ fontSize: '14px', fontWeight: 600 }}>{prodName(current.productId)} ×{current.quantity}</div>
+                <div style={{ fontSize: '14px', fontWeight: 600 }}>{prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</div>
                 {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
                 {current.changed && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>⬆ Package changed — deliver this one</div>}
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value">{o.customer}</span></div>
@@ -1377,6 +1463,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
         state: role === 'dispatch' ? state : null,
         allowed_products: isSubmitterRole ? allowedProducts : null,
         allowed_sections: allowedSections.length > 0 ? allowedSections : null,
+        allowed_statuses: role === 'staff' ? ['Confirmed', 'Rescheduled', 'Unreachable', 'Cancelled'] : null,
         username: username.trim() || null,
       }),
     });

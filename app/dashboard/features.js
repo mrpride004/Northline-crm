@@ -32,6 +32,21 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
+export async function silentlyRelinkPush(session) {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return; // permission granted but no active subscription — nothing to silently relink
+    await fetch('/api/save-push-subscription', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+  } catch (e) { /* best-effort, never block the app on this */ }
+}
+
 export async function enablePushNotifications(session, vapidPublicKey) {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
     return { ok: false, error: 'Push notifications are not supported in this browser.' };
@@ -791,39 +806,6 @@ export function ReportsPage({ orders, profiles, products, session }) {
       <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
       <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
 
-      {products && products.length > 0 && (
-        <>
-          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>Inventory levels</h3>
-          <table style={{ marginBottom: '24px' }}>
-            <thead><tr><th>Product</th><th>Current stock</th></tr></thead>
-            <tbody>
-              {products.map(p => (
-                <tr key={p.id}><td>{p.name}</td><td><span className={'pill ' + (p.stock_quantity <= p.low_stock_threshold ? 'Cancelled' : 'Delivered')}>{p.stock_quantity} units</span></td></tr>
-              ))}
-            </tbody>
-          </table>
-
-          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>Recent stock activity</h3>
-          <table style={{ marginBottom: '24px' }}>
-            <thead><tr><th>Date</th><th>Product</th><th>Change</th><th>Reason</th></tr></thead>
-            <tbody>
-              {movements.length === 0 && <tr><td colSpan="4" className="empty">No stock changes recorded yet.</td></tr>}
-              {movements.map(m => {
-                const prod = products.find(p => p.id === m.product_id);
-                return (
-                  <tr key={m.id}>
-                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</td>
-                    <td>{prod ? prod.name : '—'}</td>
-                    <td><span className={'pill ' + (m.delta >= 0 ? 'Delivered' : 'Cancelled')}>{m.delta >= 0 ? '+' : ''}{m.delta}</span></td>
-                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{m.reason || '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
-
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>By state</h3>
       <table>
         <thead><tr><th>State</th><th>Agents</th><th>Orders sent</th><th>Delivered</th></tr></thead>
@@ -1506,6 +1488,14 @@ export function ProductPackagesModal({ product, products, onClose }) {
 export function InventoryPage({ products, orders, profiles, agentStock, refresh }) {
   const [exactEdits, setExactEdits] = useState({});
   const [addAmounts, setAddAmounts] = useState({});
+  const [movements, setMovements] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(60);
+      setMovements(data || []);
+    })();
+  }, []);
 
   async function addStock(p) {
     const amt = parseInt(addAmounts[p.id], 10);
@@ -1621,6 +1611,25 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
           </>
         );
       })()}
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 10px' }}>Recent stock activity</h3>
+      <table>
+        <thead><tr><th>Date</th><th>Product</th><th>Change</th><th>Reason</th></tr></thead>
+        <tbody>
+          {movements.length === 0 && <tr><td colSpan="4" className="empty">No stock changes recorded yet.</td></tr>}
+          {movements.map(m => {
+            const prod = products.find(p => p.id === m.product_id);
+            return (
+              <tr key={m.id}>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</td>
+                <td>{prod ? prod.name : '—'}</td>
+                <td><span className={'pill ' + (m.delta >= 0 ? 'Delivered' : 'Cancelled')}>{m.delta >= 0 ? '+' : ''}{m.delta}</span></td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{m.reason || '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2810,6 +2819,21 @@ export function CommissionHub({ profiles, orders, products, packages, session, p
       {tab === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
       {tab === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={() => {}} />}
       {tab === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
+    </div>
+  );
+}
+
+// ---------- Unified Inventory hub: stock levels + agent stock together ----------
+export function InventoryHub({ products, orders, profiles, agentStock, refresh }) {
+  const [tab, setTab] = useState('inventory');
+  return (
+    <div>
+      <div className="product-tabs" style={{ marginBottom: '18px' }}>
+        <span className={'ptab' + (tab === 'inventory' ? ' active' : '')} onClick={() => setTab('inventory')}>Inventory</span>
+        <span className={'ptab' + (tab === 'agentstock' ? ' active' : '')} onClick={() => setTab('agentstock')}>Agent stock</span>
+      </div>
+      {tab === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refresh} />}
+      {tab === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refresh} />}
     </div>
   );
 }
