@@ -71,8 +71,8 @@ a{color:var(--teal-deep);}
 
 table{width:100%; max-width:100%; display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-md);}
 thead, tbody, tr{display:table; width:100%; table-layout:auto;}
-thead th{text-align:left; font-size:11.5px; color:var(--ink-soft); font-weight:600; padding:10px 14px; border-bottom:1px solid var(--line); background:#FAF8F4; white-space:nowrap;}
-tbody td{padding:12px 14px; font-size:14.5px; border-bottom:1px solid var(--line); vertical-align:middle;}
+thead th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:9px 11px; border-bottom:1px solid var(--line); background:#FAF8F4; white-space:nowrap;}
+tbody td{padding:10px 11px; font-size:13.5px; border-bottom:1px solid var(--line); vertical-align:middle;}
 tbody tr:last-child td{border-bottom:none;}
 tbody tr:hover{background:#FAF8F4;}
 .oid{font-family:'Courier New', monospace; font-size:12px; color:var(--ink-soft);}

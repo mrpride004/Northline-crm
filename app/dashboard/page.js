@@ -796,7 +796,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         <div className="empty">No orders here yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Scheduled</th><th>Created</th><th>Last updated</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Dates</th><th></th></tr></thead>
           <tbody>
             {filtered.map(o => (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
@@ -852,10 +852,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
-                      <select className="status-sel" value={o.status} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
+                      <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                         {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
-                    ) : <span className={'pill ' + o.status}>{o.status}</span>}
+                    ) : <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
                     {o.priority === 'High' && <span className="pill Cancelled">High</span>}
                   </div>
                   {latestRemarks && latestRemarks[o.id] && (
@@ -864,30 +864,31 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                     </div>
                   )}
                 </td>
-                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
-                  {o.reschedule_date && <div>📅 {o.reschedule_date}</div>}
-                  {o.preferred_time && <div>⏰ {o.preferred_time}</div>}
-                  {!o.reschedule_date && !o.preferred_time && '—'}
-                </td>
-                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
-                  {new Date(o.created_at).toLocaleDateString()}<br />{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </td>
-                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
-                  {o.status_updated_at ? (
-                    <>{new Date(o.status_updated_at).toLocaleDateString()}<br />{new Date(o.status_updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
-                  ) : '—'}
+                <td style={{ fontSize: '10.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
+                  {(o.reschedule_date || o.preferred_time) && <div>{o.reschedule_date ? `📅 ${o.reschedule_date}` : `⏰ ${o.preferred_time}`}</div>}
+                  <div>Created {new Date(o.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</div>
+                  {o.status_updated_at && <div>Updated {new Date(o.status_updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</div>}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
-                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
-                  {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && <><button className="link-btn" onClick={() => setConfirming(o)}>Reconfirm</button>{' · '}</>}
-                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && <><button className="link-btn" onClick={() => setAddingUpsellTo(o)}>Change package</button>{' · '}</>}
-                  {isAdmin && <button className="link-btn" onClick={() => setAssigning(o)}>Assign / Send to dispatch</button>}
-                  {' · '}
-                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
-                  <button className="link-btn" onClick={() => setActionsOpenFor(actionsOpenFor === o.id ? null : o.id)}>More ▾</button>
+                  <button className="btn" onClick={() => setActionsOpenFor(actionsOpenFor === o.id ? null : o.id)}>Actions ▾</button>
                   {actionsOpenFor === o.id && (
-                    <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '6px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', zIndex: 30, textAlign: 'left', minWidth: '190px', padding: '6px' }}>
-                      <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setHistoryOrder(o); setActionsOpenFor(null); }}>History</div>
+                    <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: '4px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '6px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', zIndex: 30, textAlign: 'left', minWidth: '210px', padding: '6px' }}>
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setAddingUpsellTo(o); setActionsOpenFor(null); }}>Change package</div>
+                      )}
+                      {isAdmin && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setAssigning(o); setActionsOpenFor(null); }}>Assign / Send to dispatch</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setEditing(o); setActionsOpenFor(null); }}>Edit</div>
+                      )}
+                      <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px', borderTop: '1px solid #F0EEE8', marginTop: '4px' }} onClick={() => { setHistoryOrder(o); setActionsOpenFor(null); }}>History</div>
                       <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyTrackingLink(o.id)}>Copy tracking link</div>
                       <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
                       {isAdmin && o.phone && (
