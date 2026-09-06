@@ -143,10 +143,6 @@ select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm
   .ptab{flex:0 0 auto;}
   thead th{font-size:10.5px; padding:8px 10px;}
   tbody td{font-size:12.5px; padding:9px 10px;}
-  tbody td:first-child, thead th:first-child{
-    position:sticky; left:0; z-index:2; background:var(--panel);
-    box-shadow:2px 0 4px rgba(0,0,0,.06);
-  }
-  thead th:first-child{background:#FAF8F4;}
 }
+
 

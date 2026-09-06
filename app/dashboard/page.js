@@ -858,6 +858,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {filtered.length === 0 ? (
         <div className="empty">No orders here yet.</div>
       ) : (
+        <>
+        <div className="desktop-only">
         <table>
           <thead><tr><th>Order</th><th>Product</th><th>Customer</th><th>Payment</th><th>Assigned to</th><th>Status</th><th>Dates</th><th></th></tr></thead>
           <tbody>
@@ -970,6 +972,104 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             ))}
           </tbody>
         </table>
+        </div>
+
+        <div className="mobile-only">
+          {paginated.map(o => {
+            const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
+            const current = getCurrentPackage(o, orderUpsells);
+            const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
+            return (
+              <div key={o.id} className="mobile-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span className="oid">{o.id.slice(0, 8)}</span>
+                  {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
+                    <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
+                      {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  ) : <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 600 }}>
+                  {prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}
+                  {o.priority === 'High' && <span className="pill Cancelled" style={{ marginLeft: '6px' }}>High</span>}
+                </div>
+                {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                {giftName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                {current.changed && (
+                  <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '3px' }}>
+                    ⬆ Changed from {prodName(current.previousProductId)}{pkgName(current.previousPackageId) ? ` · ${pkgName(current.previousPackageId)}` : ''}
+                    {pending && (isAdmin || pending.staff_id === myId) && (
+                      <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
+                    )}
+                  </div>
+                )}
+                {o.created_by && <div style={{ fontSize: '11px', color: '#2E6E62', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>}
+
+                <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value"><span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
+                <div className="mobile-card-row">
+                  <span className="mobile-card-label">Payment</span>
+                  <span className="mobile-card-value">
+                    <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
+                    {isAdmin && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>₦{orderTotal(o, orderUpsells).toLocaleString()}</div>}
+                    {isAdmin && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                    {isAdmin && o.payment_status === 'Paid' && <div><button className="link-btn" onClick={() => resetPaid(o)} style={{ fontSize: '11px' }}>Reset to Unpaid</button></div>}
+                  </span>
+                </div>
+                <div className="mobile-card-row">
+                  <span className="mobile-card-label">Assigned to</span>
+                  <span className="mobile-card-value">
+                    {o.staff_id ? <span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.staff_id))}>{personName(o.staff_id)}</span> : <span style={{ color: '#B0483F' }}>Unassigned</span>}
+                    {o.dispatch_id && <div style={{ marginTop: '2px' }}><span className="link-btn" onClick={() => setViewingPerson(profiles.find(p => p.id === o.dispatch_id))}>{personName(o.dispatch_id)}</span></div>}
+                  </span>
+                </div>
+                {(o.reschedule_date || o.preferred_time) && (
+                  <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
+                )}
+                <div className="mobile-card-row"><span className="mobile-card-label">Created</span><span className="mobile-card-value">{new Date(o.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>
+                {latestRemarks && latestRemarks[o.id] && (
+                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
+                )}
+
+                <div style={{ marginTop: '10px', position: 'relative' }}>
+                  <button className="btn" style={{ width: '100%' }} onClick={() => setActionsOpenFor(actionsOpenFor === o.id ? null : o.id)}>Actions ▾</button>
+                  {actionsOpenFor === o.id && (
+                    <div style={{ marginTop: '6px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '6px', boxShadow: '0 8px 24px rgba(0,0,0,.12)' }}>
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setAddingUpsellTo(o); setActionsOpenFor(null); }}>Change package</div>
+                      )}
+                      {isAdmin && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setAssigning(o); setActionsOpenFor(null); }}>Assign / Send to dispatch</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setEditing(o); setActionsOpenFor(null); }}>Edit</div>
+                      )}
+                      <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px', borderTop: '1px solid #F0EEE8' }} onClick={() => { setHistoryOrder(o); setActionsOpenFor(null); }}>History</div>
+                      <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => copyTrackingLink(o.id)}>Copy tracking link</div>
+                      <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
+                      {isAdmin && o.phone && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
+                      )}
+                      {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
+                      )}
+                      {isAdmin && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px', color: '#B0483F', borderTop: '1px solid #F0EEE8' }} onClick={() => { setConfirmDeleteOrder(o); setActionsOpenFor(null); }}>Delete order permanently</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        </>
       )}
 
       {filtered.length > PAGE_SIZE && (
