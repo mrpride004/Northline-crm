@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification } from './features';
@@ -37,6 +37,7 @@ export default function Dashboard() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState({});
   const [notifMsg, setNotifMsg] = useState('');
+  const lastLocalActionRef = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -66,6 +67,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!profile) return;
+    const ECHO_WINDOW_MS = 2500;
+    function isEcho() { return Date.now() - lastLocalActionRef.current < ECHO_WINDOW_MS; }
+
     const channel = supabase
       .channel('orders-live-' + profile.id)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
@@ -74,30 +78,60 @@ export default function Dashboard() {
           profile.role === 'admin' ||
           (profile.role === 'staff' && (o.staff_id === profile.id || !o.staff_id)) ||
           (profile.role === 'dispatch' && o.dispatch_id === profile.id);
-        if (!relevant) return;
-        showOrderAlert(`🔔 New order — ${o.customer}${o.state ? ' · ' + o.state : ''}`);
-        playNotificationSound();
+        if (relevant && !isEcho()) {
+          const msg = profile.role === 'staff'
+            ? `🔔 You have an order to confirm — ${o.customer}${o.state ? ' · ' + o.state : ''}`
+            : `🔔 New order — ${o.customer}${o.state ? ' · ' + o.state : ''}`;
+          showOrderAlert(msg);
+          playNotificationSound();
+          if (profile.role !== 'admin') {
+            sendPushNotification(session, { userIds: [profile.id], title: 'New order', body: `${o.customer}${o.state ? ' · ' + o.state : ''}`, url: '/dashboard' });
+          }
+        }
         refreshAll();
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
         const o = payload.new;
         const before = payload.old;
-        if (profile.role === 'dispatch' && o.dispatch_id === profile.id && before.dispatch_id !== profile.id) {
+        const echo = isEcho();
+
+        // Assignment changes — always relevant to the person newly assigned
+        if (profile.role === 'dispatch' && o.dispatch_id === profile.id && before.dispatch_id !== profile.id && !echo) {
           showOrderAlert(`🔔 New delivery assigned — ${o.customer}${o.state ? ' · ' + o.state : ''}`);
           playNotificationSound();
-          refreshAll();
+          sendPushNotification(session, { userIds: [profile.id], title: 'New delivery assigned', body: o.customer, url: '/dashboard' });
         }
-        if (profile.role === 'staff' && o.staff_id === profile.id && before.staff_id !== profile.id) {
+        if (profile.role === 'staff' && o.staff_id === profile.id && before.staff_id !== profile.id && !echo) {
           showOrderAlert(`🔔 Order assigned to you — ${o.customer}`);
           playNotificationSound();
-          refreshAll();
+          sendPushNotification(session, { userIds: [profile.id], title: 'Order assigned to you', body: o.customer, url: '/dashboard' });
         }
+
+        // Status changes — curated per role so people aren't notified about their own actions
+        const statusChanged = o.status !== before.status;
+        if (statusChanged && !echo) {
+          const orderNumber = o.id.slice(0, 8);
+          if (profile.role === 'staff' && o.staff_id === profile.id) {
+            const msg = `${o.customer} · #${orderNumber} — ${o.status}`;
+            showOrderAlert(`🔔 ${msg}`);
+            playNotificationSound();
+            sendPushNotification(session, { userIds: [profile.id], title: 'Order status changed', body: msg, url: '/dashboard' });
+          }
+          if (profile.role === 'dispatch' && o.dispatch_id === profile.id && o.status === 'Confirmed') {
+            const msg = `${o.customer} · #${orderNumber} is now Confirmed`;
+            showOrderAlert(`🔔 ${msg}`);
+            playNotificationSound();
+            sendPushNotification(session, { userIds: [profile.id], title: 'Order confirmed', body: msg, url: '/dashboard' });
+          }
+        }
+        refreshAll();
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [profile]);
+  }, [profile, session]);
 
   async function refreshAll() {
+    lastLocalActionRef.current = Date.now();
     const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
@@ -1178,9 +1212,9 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                   {unpaidDelivered ? (
                     <button
                       onClick={() => markPaid(o)}
-                      style={{ background: '#B0483F', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                      style={{ background: '#C6862F', color: '#fff', border: 'none', borderRadius: '6px', padding: '7px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
                     >
-                      ⚠ COLLECT PAYMENT
+                      Mark as Paid
                     </button>
                   ) : (
                     <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
@@ -1234,9 +1268,9 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                   {unpaidDelivered && (
                     <button
                       onClick={() => markPaid(o)}
-                      style={{ background: '#B0483F', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                      style={{ background: '#C6862F', color: '#fff', border: 'none', borderRadius: '6px', padding: '7px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
                     >
-                      ⚠ COLLECT PAYMENT
+                      Mark as Paid
                     </button>
                   )}
                   <button className="btn" onClick={() => copyOrderInfo(o)}>Copy info</button>

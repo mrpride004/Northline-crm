@@ -6,14 +6,14 @@ const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'U
 
 export function statusRowColor(status) {
   const map = {
-    New: '#FBF6EC',
-    Confirmed: '#EAF4F1',
-    Preparing: '#EEEFF9',
-    Dispatched: '#EAF3FA',
-    Delivered: '#EAF6EA',
-    Unreachable: '#FBF0E2',
-    Rescheduled: '#F5F0FA',
-    Cancelled: '#FBEEED',
+    New: '#F1DFA9',
+    Confirmed: '#B9E0D3',
+    Preparing: '#C6CBF0',
+    Dispatched: '#B6DEF3',
+    Delivered: '#BEE4BE',
+    Unreachable: '#F0C889',
+    Rescheduled: '#D7BEEC',
+    Cancelled: '#EFBEBA',
   };
   return map[status] || 'transparent';
 }
@@ -933,6 +933,25 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
   const [newPassword, setNewPassword] = useState('');
   const [passwordMsg, setPasswordMsg] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [notifyTarget, setNotifyTarget] = useState('all_staff');
+  const [notifyMessage, setNotifyMessage] = useState('');
+  const [notifyStatus, setNotifyStatus] = useState('');
+  const [sendingNotify, setSendingNotify] = useState(false);
+
+  async function sendCustomNotification() {
+    if (!notifyMessage.trim()) { setNotifyStatus('Write a message first.'); return; }
+    let userIds = [];
+    if (notifyTarget === 'all_staff') userIds = (profiles || []).filter(p => p.role === 'staff').map(p => p.id);
+    else if (notifyTarget === 'all_dispatch') userIds = (profiles || []).filter(p => p.role === 'dispatch').map(p => p.id);
+    else if (notifyTarget === 'everyone') userIds = (profiles || []).filter(p => p.role !== 'admin').map(p => p.id);
+    else userIds = [notifyTarget];
+    if (userIds.length === 0) { setNotifyStatus('No one matches that selection.'); return; }
+    setSendingNotify(true);
+    await sendPushNotification(session, { userIds, title: 'Message from admin', body: notifyMessage.trim(), url: '/dashboard' });
+    setSendingNotify(false);
+    setNotifyStatus(`✓ Sent to ${userIds.length} ${userIds.length === 1 ? 'person' : 'people'}.`);
+    setNotifyMessage('');
+  }
 
   async function changeMyPassword() {
     if (newPassword.length < 6) { setPasswordMsg('Password must be at least 6 characters.'); return; }
@@ -1004,6 +1023,32 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
           {savingPassword ? 'Saving…' : 'Set new password'}
         </button>
         {passwordMsg && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{passwordMsg}</p>}
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Send a notification</h3>
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', maxWidth: '440px', marginBottom: '22px' }}>
+        <label className="field-label" style={{ marginTop: 0 }}>Who should get this?</label>
+        <select value={notifyTarget} onChange={e => setNotifyTarget(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}>
+          <option value="all_staff">All staff</option>
+          <option value="all_dispatch">All dispatch partners</option>
+          <option value="everyone">Everyone (staff + dispatch)</option>
+          {(profiles || []).filter(p => p.role !== 'admin').map(p => (
+            <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>
+          ))}
+        </select>
+        <label className="field-label">Message</label>
+        <textarea
+          value={notifyMessage} onChange={e => setNotifyMessage(e.target.value)}
+          placeholder="e.g. Please check your unassigned orders before close of business today"
+          style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px', minHeight: '70px', resize: 'vertical', fontFamily: 'inherit' }}
+        />
+        <button className="btn primary" onClick={sendCustomNotification} disabled={sendingNotify} style={{ width: '100%' }}>
+          {sendingNotify ? 'Sending…' : '🔔 Send notification'}
+        </button>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>
+          Only reaches people who've turned on push notifications from their sidebar. It won't wake up someone who hasn't enabled it yet.
+        </p>
+        {notifyStatus && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '6px' }}>{notifyStatus}</p>}
       </div>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Order confirmation to customers</h3>
