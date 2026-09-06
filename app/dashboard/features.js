@@ -271,6 +271,19 @@ export function getCurrentPackage(order, upsells) {
   };
 }
 
+export function computeSuccessRate(orders, staffId, windowDays, windowEnabled) {
+  let myOrders = orders.filter(o => o.staff_id === staffId);
+  if (windowEnabled && windowDays > 0) {
+    const cutoff = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+    myOrders = myOrders.filter(o => new Date(o.created_at) >= cutoff);
+  }
+  const delivered = myOrders.filter(o => o.status === 'Delivered');
+  const deliveredPaid = delivered.filter(o => o.payment_status === 'Paid');
+  const rate = delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100;
+  return { rate, delivered: delivered.length, deliveredPaid: deliveredPaid.length };
+}
+
+
 export function orderTotal(o, upsells) {
   const current = getCurrentPackage(o, upsells);
   const fee = Number(o.delivery_fee || 0);
@@ -484,6 +497,8 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
   const [remark, setRemark] = useState('');
   const [statePref, setStatePref] = useState(null);
+  const [chosenAgent, setChosenAgent] = useState(null);
+  const [assignMode, setAssignMode] = useState(null);
   const [loadedPref, setLoadedPref] = useState(false);
 
   const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && order.state && p.state === order.state);
@@ -491,16 +506,30 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
   useEffect(() => {
     (async () => {
       if (!order.state) { setLoadedPref(true); return; }
-      const { data } = await supabase.from('state_dispatch_preference').select('*').eq('state', order.state).maybeSingle();
-      setStatePref(data);
+      const { data: pref } = await supabase.from('state_dispatch_preference').select('*').eq('state', order.state).maybeSingle();
+      setStatePref(pref);
+
+      if (pref && pref.active && pref.assignment_mode === 'round_robin' && matchingDispatch.length > 0) {
+        const ids = matchingDispatch.map(d => d.id);
+        const { data: activeOrders } = await supabase.from('orders').select('dispatch_id').in('dispatch_id', ids).not('status', 'in', '("Delivered","Cancelled")');
+        const counts = {};
+        ids.forEach(id => { counts[id] = 0; });
+        (activeOrders || []).forEach(o => { if (o.dispatch_id) counts[o.dispatch_id] = (counts[o.dispatch_id] || 0) + 1; });
+        const leastLoaded = matchingDispatch.slice().sort((a, b) => counts[a.id] - counts[b.id])[0];
+        setChosenAgent(leastLoaded);
+        setAssignMode('round_robin');
+      } else if (pref && pref.active && pref.dispatch_id) {
+        const agent = matchingDispatch.find(d => d.id === pref.dispatch_id);
+        setChosenAgent(agent || matchingDispatch[0] || null);
+        setAssignMode(agent ? 'preferred' : (matchingDispatch[0] ? 'first_match' : null));
+      } else {
+        setChosenAgent(matchingDispatch[0] || null);
+        setAssignMode(matchingDispatch[0] ? 'first_match' : null);
+      }
       setLoadedPref(true);
     })();
   }, []);
 
-  const preferredAgent = statePref && statePref.active && statePref.dispatch_id
-    ? matchingDispatch.find(d => d.id === statePref.dispatch_id)
-    : null;
-  const chosenAgent = preferredAgent || matchingDispatch[0];
   const willAutoAssign = !order.dispatch_id && !!chosenAgent;
 
   async function confirm() {
@@ -520,7 +549,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
     await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
     if (willAutoAssign) {
-      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation.` });
+      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
       sendPushNotification(session, { userIds: [chosenAgent.id], title: 'New delivery assigned', body: order.customer, url: '/dashboard' });
     }
     if (remark.trim()) {
@@ -546,7 +575,8 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
           <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>Already assigned to a dispatch partner — confirming will notify them.</p>
         ) : willAutoAssign ? (
           <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
-            ✓ Will automatically send to {chosenAgent.full_name} in {order.state} on confirmation{preferredAgent ? ' (admin-preferred agent)' : ''}.
+            ✓ Will automatically send to {chosenAgent.full_name} in {order.state} on confirmation
+            {assignMode === 'preferred' ? ' (admin-preferred agent)' : assignMode === 'round_robin' ? ' (load-balanced — has the fewest active deliveries right now)' : ''}.
           </p>
         ) : (
           <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {order.state || "this order's state"} yet — admin will need to assign one manually.</p>
@@ -823,6 +853,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
   const [showPassword, setShowPassword] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [passwordMsg, setPasswordMsg] = useState('');
+  const [commissionSummary, setCommissionSummary] = useState(null);
   const isDispatch = person.role === 'dispatch';
   const handled = orders.filter(o => (isDispatch ? o.dispatch_id : o.staff_id) === person.id);
   const byStatus = {};
@@ -832,6 +863,46 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
   const avgHours = delivered.length
     ? delivered.reduce((sum, o) => sum + (new Date(o.delivered_at) - new Date(o.created_at)) / 3600000, 0) / delivered.length
     : null;
+
+  useEffect(() => {
+    if (person.role !== 'staff') return;
+    (async () => {
+      const [{ data: led }, { data: cl }] = await Promise.all([
+        supabase.from('commission_ledger').select('*').eq('staff_id', person.id).eq('reversed', false),
+        supabase.from('commission_claims').select('*').eq('staff_id', person.id),
+      ]);
+      const earned = (led || []).reduce((sum, l) => sum + Number(l.amount), 0);
+      const claimed = (cl || []).reduce((sum, c) => sum + Number(c.amount), 0);
+      setCommissionSummary({ earned, claimed, balance: earned - claimed });
+    })();
+  }, [person.id]);
+
+  const deliveredPaid = delivered.filter(o => o.payment_status === 'Paid');
+  const successRate = delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100;
+
+  function buildSummaryText() {
+    const lines = [
+      `Performance summary — ${person.full_name}`,
+      `Role: ${person.role}${person.state ? ' · ' + person.state : ''}`,
+      `Joined: ${person.created_at ? new Date(person.created_at).toLocaleDateString() : '—'}`,
+      `Last seen: ${lastSeenText}`,
+      '',
+      `Total handled: ${handled.length}`,
+      `Delivered: ${delivered.length}`,
+      `Success rate (delivered & paid): ${successRate.toFixed(0)}%`,
+      avgHours ? `Avg. turnaround: ${avgHours.toFixed(1)}h` : null,
+      isDispatch ? `Delivery charges collected: ₦${deliveryCharges.toLocaleString()}` : null,
+    ];
+    STATUSES.forEach(s => lines.push(`  ${s}: ${byStatus[s]}`));
+    if (commissionSummary) {
+      lines.push('', `Commission earned: ₦${commissionSummary.earned.toLocaleString()}`, `Commission claimed: ₦${commissionSummary.claimed.toLocaleString()}`, `Unclaimed balance: ₦${commissionSummary.balance.toLocaleString()}`);
+    }
+    return lines.filter(l => l !== null).join('\n');
+  }
+
+  async function shareSummary() {
+    await copyToClipboard(buildSummaryText(), 'Performance summary copied — paste it anywhere to share');
+  }
 
   async function toggleActive() {
     setBusy(true);
@@ -881,9 +952,12 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
         <div className="stats" style={{ marginBottom: '16px' }}>
           <div className="stat"><div className="stat-num">{handled.length}</div><div className="stat-label">Total handled</div></div>
           <div className="stat"><div className="stat-num">{delivered.length}</div><div className="stat-label">Delivered</div></div>
+          <div className="stat"><div className="stat-num">{successRate.toFixed(0)}%</div><div className="stat-label">Success rate</div></div>
           <div className="stat"><div className="stat-num">{avgHours ? avgHours.toFixed(1) + 'h' : '—'}</div><div className="stat-label">Avg. turnaround</div></div>
           {isDispatch && <div className="stat"><div className="stat-num">₦{deliveryCharges.toLocaleString()}</div><div className="stat-label">Delivery charges collected</div></div>}
+          {commissionSummary && <div className="stat"><div className="stat-num">₦{commissionSummary.balance.toLocaleString()}</div><div className="stat-label">Unclaimed commission</div></div>}
         </div>
+        <button className="btn" onClick={shareSummary} style={{ marginBottom: '16px' }}>📋 Copy performance summary to share</button>
         <div className="list-manage" style={{ marginBottom: '16px' }}>
           {STATUSES.map(s => (
             <div key={s} className="list-manage-row"><span>{s}</span><span style={{ color: '#8A93A0' }}>{byStatus[s]}</span></div>
@@ -1000,9 +1074,14 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
     loadCompanies();
   }
 
-  async function saveStatePref(state, dispatchId, active) {
+  async function saveStatePref(state, dispatchId, active, mode) {
     setSavingState(state);
-    await supabase.from('state_dispatch_preference').upsert({ state, dispatch_id: dispatchId || null, active, updated_at: new Date().toISOString() });
+    const existing = statePrefs[state];
+    await supabase.from('state_dispatch_preference').upsert({
+      state, dispatch_id: dispatchId || null, active,
+      assignment_mode: mode || (existing ? existing.assignment_mode : 'preferred'),
+      updated_at: new Date().toISOString(),
+    });
     await loadStatePrefs();
     setSavingState('');
   }
@@ -1079,26 +1158,42 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
         {statesWithMultipleAgents.map(state => {
           const agentsHere = dispatchList.filter(d => d.state === state);
           const pref = statePrefs[state];
+          const mode = pref?.assignment_mode || 'preferred';
           return (
-            <div key={state} className="list-manage-row">
+            <div key={state} className="list-manage-row" style={{ flexWrap: 'wrap' }}>
               <span style={{ minWidth: '100px', display: 'inline-block' }}>{state}</span>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <select
-                  value={pref?.dispatch_id || ''}
-                  onChange={e => saveStatePref(state, e.target.value, pref ? pref.active : true)}
+                  value={mode}
+                  onChange={e => saveStatePref(state, pref?.dispatch_id, pref ? pref.active : true, e.target.value)}
                   style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
                 >
-                  <option value="">— No preference (first match) —</option>
-                  {agentsHere.map(a => <option key={a.id} value={a.id}>{a.full_name}</option>)}
+                  <option value="preferred">Fixed agent</option>
+                  <option value="round_robin">Load-balance (least busy)</option>
                 </select>
+                {mode === 'preferred' && (
+                  <select
+                    value={pref?.dispatch_id || ''}
+                    onChange={e => saveStatePref(state, e.target.value, pref ? pref.active : true, mode)}
+                    style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                  >
+                    <option value="">— No preference (first match) —</option>
+                    {agentsHere.map(a => <option key={a.id} value={a.id}>{a.full_name}</option>)}
+                  </select>
+                )}
                 <button
                   className="btn"
-                  onClick={() => saveStatePref(state, pref?.dispatch_id, !(pref ? pref.active : true))}
+                  onClick={() => saveStatePref(state, pref?.dispatch_id, !(pref ? pref.active : true), mode)}
                   disabled={savingState === state}
                 >
                   {pref && !pref.active ? 'Off — turn on' : 'On — turn off'}
                 </button>
               </div>
+              {mode === 'round_robin' && (
+                <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px', width: '100%' }}>
+                  New orders here will automatically go to whichever of your {agentsHere.length} agents currently has the fewest active deliveries.
+                </p>
+              )}
             </div>
           );
         })}
@@ -1683,6 +1778,7 @@ export function CommissionPage({ profile, orders, products, session }) {
   const [claims, setClaims] = useState([]);
   const [threshold, setThreshold] = useState(0);
   const [claimDay, setClaimDay] = useState(1);
+  const [windowDays, setWindowDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
   const [msg, setMsg] = useState('');
@@ -1691,23 +1787,26 @@ export function CommissionPage({ profile, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }] = await Promise.all([
+    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }, { data: windowSetting }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'success_rate_window_days').maybeSingle(),
     ]);
     setLedger(led || []);
     setClaims(cl || []);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    setWindowDays(windowSetting ? parseInt(windowSetting.value, 10) || 30 : 30);
     setLoading(false);
   }
 
   const myOrders = orders.filter(o => o.staff_id === profile.id);
-  const myDelivered = myOrders.filter(o => o.status === 'Delivered');
-  const myDeliveredPaid = myDelivered.filter(o => o.payment_status === 'Paid');
-  const successRate = myDelivered.length > 0 ? (myDeliveredPaid.length / myDelivered.length) * 100 : 100;
+  const rateInfo = computeSuccessRate(orders, profile.id, windowDays, profile.success_rate_window_enabled);
+  const successRate = rateInfo.rate;
+  const myDelivered = { length: rateInfo.delivered };
+  const myDeliveredPaid = { length: rateInfo.deliveredPaid };
   const eligible = successRate >= threshold;
   const isClaimDay = new Date().getDay() === claimDay;
 
@@ -1775,7 +1874,10 @@ export function CommissionPage({ profile, orders, products, session }) {
         <div style={{ background: '#F0EEE8', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
           <div style={{ width: `${Math.min(100, successRate)}%`, height: '100%', background: eligible ? '#2E6E62' : '#C6862F', transition: 'width .3s ease' }} />
         </div>
-        <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '8px' }}>{myDeliveredPaid.length} paid out of {myDelivered.length} delivered orders you're on.</p>
+        <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '8px' }}>
+          {myDeliveredPaid.length} paid out of {myDelivered.length} delivered orders you're on
+          {profile.success_rate_window_enabled ? ` (last ${windowDays} days)` : ' (all-time)'}.
+        </p>
       </div>
 
       {Object.keys(byProduct).length > 0 && (
@@ -1816,6 +1918,7 @@ export function CommissionPage({ profile, orders, products, session }) {
 export function AdminCommissionPage({ profiles, orders, products, session }) {
   const [threshold, setThreshold] = useState(0);
   const [claimDay, setClaimDay] = useState(1);
+  const [windowDays, setWindowDays] = useState(30);
   const [ledgerAll, setLedgerAll] = useState([]);
   const [claimsAll, setClaimsAll] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -1831,14 +1934,16 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: rateSetting }, { data: daySetting }, { data: freeRule }, { data: rules }] = await Promise.all([
+    const [{ data: rateSetting }, { data: daySetting }, { data: windowSetting }, { data: freeRule }, { data: rules }] = await Promise.all([
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'success_rate_window_days').maybeSingle(),
       supabase.from('free_commission_rules').select('*').limit(1).maybeSingle(),
       supabase.from('commission_rules').select('*'),
     ]);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    setWindowDays(windowSetting ? parseInt(windowSetting.value, 10) || 30 : 30);
     const ruleMap = {};
     (rules || []).forEach(r => { ruleMap[r.product_id] = r; });
     setProductRules(ruleMap);
@@ -1853,11 +1958,21 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
     setClaimsAll(cl || []);
   }
 
+  async function toggleStaffWindow(staffId, current) {
+    await supabase.from('profiles').update({ success_rate_window_enabled: !current }).eq('id', staffId);
+    // Refresh just the affected profile locally by reloading the page's profiles isn't available here —
+    // parent refresh will pick it up on next natural reload; for immediate feedback, mutate in place.
+    const idx = profiles.findIndex(p => p.id === staffId);
+    if (idx >= 0) profiles[idx].success_rate_window_enabled = !current;
+    load();
+  }
+
   async function saveSettings() {
     setSaving(true);
     await Promise.all([
       supabase.from('app_settings').upsert({ key: 'min_success_rate_to_claim', value: String(threshold) }),
       supabase.from('app_settings').upsert({ key: 'claim_day', value: String(claimDay) }),
+      supabase.from('app_settings').upsert({ key: 'success_rate_window_days', value: String(windowDays) }),
     ]);
     setSaving(false);
   }
@@ -1890,8 +2005,10 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
         </select>
         <label className="field-label">Minimum delivery success rate to claim (%)</label>
         <input type="number" min="0" max="100" value={threshold} onChange={e => setThreshold(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }} />
-        <button className="btn primary" onClick={saveSettings} disabled={saving} style={{ width: '100%' }}>{saving ? 'Saving…' : 'Save both settings'}</button>
-        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set the rate to 0 to let everyone claim freely regardless of performance.</p>
+        <label className="field-label">Rolling success-rate window (days)</label>
+        <input type="number" min="1" value={windowDays} onChange={e => setWindowDays(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }} />
+        <button className="btn primary" onClick={saveSettings} disabled={saving} style={{ width: '100%' }}>{saving ? 'Saving…' : 'Save all settings'}</button>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '8px' }}>Success rate = their Delivered-and-Paid orders ÷ all their Delivered orders. Set the rate to 0 to let everyone claim freely regardless of performance. The rolling window only applies to staff you've switched to "rolling" in the table below — everyone else uses all-time by default.</p>
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
@@ -1942,20 +2059,19 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
       </table>
       {managingProduct && <CommissionRuleModal product={managingProduct} profiles={profiles} onClose={() => { setManagingProduct(null); load(); }} />}
 
+      <div className="desktop-only">
       <table>
-        <thead><tr><th>Staff</th><th>Joined</th><th>Unclaimed balance</th><th>Success rate</th><th>Eligible?</th><th>Last claim</th></tr></thead>
+        <thead><tr><th>Staff</th><th>Joined</th><th>Unclaimed balance</th><th>Success rate</th><th>Rate window</th><th>Eligible?</th><th>Last claim</th></tr></thead>
         <tbody>
-          {staffList.length === 0 && <tr><td colSpan="6" className="empty">No staff added yet.</td></tr>}
+          {staffList.length === 0 && <tr><td colSpan="7" className="empty">No staff added yet.</td></tr>}
           {staffList.map(s => {
             const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
             const myClaims = claimsAll.filter(c => c.staff_id === s.id);
             const earned = myLedger.reduce((sum, l) => sum + Number(l.amount), 0);
             const claimed = myClaims.reduce((sum, c) => sum + Number(c.amount), 0);
             const balance = earned - claimed;
-            const myOrders = orders.filter(o => o.staff_id === s.id);
-            const delivered = myOrders.filter(o => o.status === 'Delivered');
-            const deliveredPaid = delivered.filter(o => o.payment_status === 'Paid');
-            const rate = delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100;
+            const rateInfo = computeSuccessRate(orders, s.id, windowDays, s.success_rate_window_enabled);
+            const rate = rateInfo.rate;
             const lastClaim = myClaims.sort((a, b) => new Date(b.claimed_at) - new Date(a.claimed_at))[0];
             return (
               <tr key={s.id}>
@@ -1963,6 +2079,11 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}</td>
                 <td>₦{balance.toLocaleString()}</td>
                 <td>{rate.toFixed(0)}%</td>
+                <td>
+                  <button className="link-btn" style={{ fontSize: '11.5px' }} onClick={() => toggleStaffWindow(s.id, s.success_rate_window_enabled)}>
+                    {s.success_rate_window_enabled ? `Rolling (${windowDays}d)` : 'All-time'}
+                  </button>
+                </td>
                 <td><span className={'pill ' + (rate >= threshold ? 'Delivered' : 'Cancelled')}>{rate >= threshold ? 'Eligible' : 'Not yet'}</span></td>
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{lastClaim ? new Date(lastClaim.claimed_at).toLocaleDateString() : 'Never'}</td>
               </tr>
@@ -1970,6 +2091,41 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
           })}
         </tbody>
       </table>
+      </div>
+
+      <div className="mobile-only">
+        {staffList.length === 0 && <div className="empty">No staff added yet.</div>}
+        {staffList.map(s => {
+          const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
+          const myClaims = claimsAll.filter(c => c.staff_id === s.id);
+          const earned = myLedger.reduce((sum, l) => sum + Number(l.amount), 0);
+          const claimed = myClaims.reduce((sum, c) => sum + Number(c.amount), 0);
+          const balance = earned - claimed;
+          const rateInfo = computeSuccessRate(orders, s.id, windowDays, s.success_rate_window_enabled);
+          const rate = rateInfo.rate;
+          const lastClaim = myClaims.sort((a, b) => new Date(b.claimed_at) - new Date(a.claimed_at))[0];
+          return (
+            <div key={s.id} className="mobile-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontWeight: 600 }}>{s.full_name}</span>
+                <span className={'pill ' + (rate >= threshold ? 'Delivered' : 'Cancelled')}>{rate >= threshold ? 'Eligible' : 'Not yet'}</span>
+              </div>
+              <div className="mobile-card-row"><span className="mobile-card-label">Joined</span><span className="mobile-card-value">{s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}</span></div>
+              <div className="mobile-card-row"><span className="mobile-card-label">Unclaimed balance</span><span className="mobile-card-value" style={{ fontWeight: 600 }}>₦{balance.toLocaleString()}</span></div>
+              <div className="mobile-card-row"><span className="mobile-card-label">Success rate</span><span className="mobile-card-value">{rate.toFixed(0)}%</span></div>
+              <div className="mobile-card-row">
+                <span className="mobile-card-label">Rate window</span>
+                <span className="mobile-card-value">
+                  <button className="link-btn" style={{ fontSize: '11.5px' }} onClick={() => toggleStaffWindow(s.id, s.success_rate_window_enabled)}>
+                    {s.success_rate_window_enabled ? `Rolling (${windowDays}d)` : 'All-time'}
+                  </button>
+                </span>
+              </div>
+              <div className="mobile-card-row"><span className="mobile-card-label">Last claim</span><span className="mobile-card-value">{lastClaim ? new Date(lastClaim.claimed_at).toLocaleDateString() : 'Never'}</span></div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2628,6 +2784,32 @@ export function SuspiciousActivityPage({ profiles, orders }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// ---------- Unified Commission hub: overview, upsell rules, upsells, corrections ----------
+export function CommissionHub({ profiles, orders, products, packages, session, profile }) {
+  const [tab, setTab] = useState('overview');
+  const TABS = [
+    { key: 'overview', label: 'Overview' },
+    { key: 'upsellrules', label: 'Upsell Rules' },
+    { key: 'upsells', label: 'Upsells' },
+    { key: 'corrections', label: 'Corrections' },
+    { key: 'suspicious', label: 'Suspicious Activity' },
+  ];
+  return (
+    <div>
+      <div className="product-tabs" style={{ marginBottom: '18px' }}>
+        {TABS.map(t => (
+          <span key={t.key} className={'ptab' + (tab === t.key ? ' active' : '')} onClick={() => setTab(t.key)}>{t.label}</span>
+        ))}
+      </div>
+      {tab === 'overview' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
+      {tab === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} profiles={profiles} />}
+      {tab === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
+      {tab === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={() => {}} />}
+      {tab === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
     </div>
   );
 }

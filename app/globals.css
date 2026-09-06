@@ -99,7 +99,7 @@ select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm
 .row2{display:flex; gap:10px;}
 .row2 > div{flex:1;}
 .list-manage{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-md); padding:6px;}
-.list-manage-row{display:flex; justify-content:space-between; align-items:center; padding:9px 12px; font-size:13px; border-bottom:1px solid var(--line);}
+.list-manage-row{display:flex; justify-content:space-between; align-items:center; padding:9px 12px; font-size:13px; border-bottom:1px solid var(--line); flex-wrap:wrap; gap:8px;}
 .list-manage-row:last-child{border-bottom:none;}
 .tiny-x{background:none; border:none; color:var(--rust); cursor:pointer; font-size:12px;}
 .loading{padding:60px; text-align:center; color:var(--ink-soft);}
