@@ -922,7 +922,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
 }
 
 // ---------- Settings: messaging toggles + external dispatch companies ----------
-export function SettingsPage({ settings, profiles, refresh }) {
+export function SettingsPage({ settings, profiles, session, profile, refresh }) {
   const [companies, setCompanies] = useState([]);
   const [name, setName] = useState('');
   const [contactName, setContactName] = useState('');
@@ -930,6 +930,23 @@ export function SettingsPage({ settings, profiles, refresh }) {
   const [channel, setChannel] = useState('whatsapp');
   const [statePrefs, setStatePrefs] = useState({});
   const [savingState, setSavingState] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+
+  async function changeMyPassword() {
+    if (newPassword.length < 6) { setPasswordMsg('Password must be at least 6 characters.'); return; }
+    setSavingPassword(true);
+    const res = await fetch('/api/set-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userId: profile.id, newPassword }),
+    });
+    const body = await res.json();
+    setSavingPassword(false);
+    setPasswordMsg(res.ok ? '✓ Password updated — use it next time you sign in.' : (body.error || 'Something went wrong.'));
+    if (res.ok) setNewPassword('');
+  }
 
   const dispatchList = (profiles || []).filter(p => p.role === 'dispatch');
   const statesWithMultipleAgents = [...new Set(dispatchList.map(d => d.state).filter(Boolean))]
@@ -974,6 +991,20 @@ export function SettingsPage({ settings, profiles, refresh }) {
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">Settings</h1><p className="page-sub">Control automatic messaging and manage external dispatch companies.</p></div></div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>My account</h3>
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', maxWidth: '440px', marginBottom: '22px' }}>
+        <label className="field-label" style={{ marginTop: 0 }}>Change my password</label>
+        <input
+          type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+          placeholder="New password (at least 6 characters)"
+          style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '10px' }}
+        />
+        <button className="btn primary" onClick={changeMyPassword} disabled={savingPassword} style={{ width: '100%' }}>
+          {savingPassword ? 'Saving…' : 'Set new password'}
+        </button>
+        {passwordMsg && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{passwordMsg}</p>}
+      </div>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Order confirmation to customers</h3>
       <div className="list-manage" style={{ marginBottom: '22px' }}>

@@ -223,7 +223,7 @@ export default function Dashboard() {
         {isAdmin && page === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
-        {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} refresh={refreshAll} />}
+        {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
         {isAdmin && page === 'commission' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
         {isAdmin && page === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} profiles={profiles} />}
         {isAdmin && page === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={refreshAll} />}
