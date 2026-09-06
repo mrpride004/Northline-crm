@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -55,6 +55,7 @@ function DashboardInner() {
   const [settings, setSettings] = useState({});
   const [dispatchCompanies, setDispatchCompanies] = useState([]);
   const [packages, setPackages] = useState([]);
+  const [productSets, setProductSets] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -176,7 +177,7 @@ function DashboardInner() {
 
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -186,6 +187,8 @@ function DashboardInner() {
       supabase.from('product_packages').select('*'),
       supabase.from('order_events').select('*').eq('event_type', 'remark').order('created_at', { ascending: false }).limit(500),
       supabase.from('upsells').select('*'),
+      supabase.from('product_sets').select('*').eq('active', true),
+      supabase.from('product_set_items').select('*'),
     ]);
     setProducts(prod || []);
     setOrders(ord || []);
@@ -196,6 +199,7 @@ function DashboardInner() {
     setSettings(settingsMap);
     setDispatchCompanies(companies || []);
     setPackages(pkgs || []);
+    setProductSets((setRows || []).map(s => ({ ...s, items: (setItemRows || []).filter(i => i.set_id === s.id) })));
     const remarkMap = {};
     (events || []).forEach(e => {
       if (!remarkMap[e.order_id]) remarkMap[e.order_id] = e; // first hit per order = most recent, since already sorted desc
@@ -310,7 +314,7 @@ function DashboardInner() {
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
-        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
+        {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
@@ -319,7 +323,7 @@ function DashboardInner() {
         {page === 'messages' && <MessagesPage profile={profile} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} session={session} profile={profile} />}
 
-        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
+        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
 
@@ -383,7 +387,9 @@ function AdminOverview({ orders, products, profiles }) {
   );
 }
 
-function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCorrection, onSave, onClose }) {
+function OrderModal({ products, packages, profiles, productSets, order, isAdmin, onRequestCorrection, onSave, onClose }) {
+  const [orderType, setOrderType] = useState(order && order.set_id ? 'set' : 'product');
+  const [setId, setSetId] = useState(order ? order.set_id || '' : '');
   const [productId, setProductId] = useState(order ? order.product_id : (products[0] ? products[0].id : ''));
   const [customer, setCustomer] = useState(order ? order.customer : '');
   const [phone, setPhone] = useState(order ? order.phone : '');
@@ -417,7 +423,24 @@ function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCor
   }
 
   function save() {
-    if (!customer.trim() || !productId) return;
+    if (!customer.trim()) return;
+    if (orderType === 'set') {
+      if (!setId) return;
+      onSave({
+        set_id: setId, product_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
+        quantity: parseInt(quantity, 10) || 1,
+        unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
+        delivery_fee: parseFloat(deliveryFee) || 0,
+        payment_status: paymentStatus,
+        reschedule_date: rescheduleDate || null,
+        priority, preferred_time: preferredTime.trim(),
+        package_id: null, gift_quantity: 0,
+        state: state || null,
+        dispatch_id: dispatchId || null,
+      });
+      return;
+    }
+    if (!productId) return;
     if (!order) {
       const product = products.find(p => p.id === productId);
       if (!product || product.stock_quantity <= 0) {
@@ -426,7 +449,7 @@ function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCor
       }
     }
     onSave({
-      product_id: productId, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
+      product_id: productId, set_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
       quantity: parseInt(quantity, 10) || 1,
       unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
       delivery_fee: parseFloat(deliveryFee) || 0,
@@ -450,6 +473,41 @@ function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCor
             fraud. {onRequestCorrection && <button className="link-btn" onClick={() => onRequestCorrection(order)}>Request a correction</button>} instead if something genuinely needs to change.
           </div>
         )}
+        {!order && productSets && productSets.length > 0 && (
+          <>
+            <label style={{ marginTop: 0 }}>What's this order for?</label>
+            <div className="row2" style={{ marginBottom: '10px' }}>
+              <button type="button" className={'btn' + (orderType === 'product' ? ' primary' : '')} onClick={() => setOrderType('product')} style={{ flex: 1 }}>Single product</button>
+              <button type="button" className={'btn' + (orderType === 'set' ? ' primary' : '')} onClick={() => setOrderType('set')} style={{ flex: 1 }}>Product set</button>
+            </div>
+          </>
+        )}
+        {orderType === 'set' && !order ? (
+          <>
+            <label style={{ marginTop: 0 }}>Set</label>
+            <select value={setId} onChange={e => {
+              setSetId(e.target.value);
+              const s = productSets.find(ps => ps.id === e.target.value);
+              if (s && s.price_mode === 'flat' && s.flat_price != null) setUnitPrice(s.flat_price);
+            }}>
+              <option value="">— Select a set —</option>
+              {productSets.map(s => {
+                const { inStock, text } = setStockLabel(s, products);
+                return <option key={s.id} value={s.id} disabled={!inStock}>{s.name}{text}</option>;
+              })}
+            </select>
+            {setId && (() => {
+              const s = productSets.find(ps => ps.id === setId);
+              if (!s) return null;
+              return (
+                <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
+                  Contains: {s.items.map(i => `${i.quantity_per_set}× ${(products.find(p => p.id === i.product_id) || {}).name || '—'}`).join(' + ')}
+                </p>
+              );
+            })()}
+          </>
+        ) : (
+        <>
         <label>Product</label>
         <select value={productId} onChange={e => { setProductId(e.target.value); setPackageId(''); setGiftQuantity(0); }} disabled={isLocked}>
           {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name} ({p.stock_quantity ?? 0} in stock){(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
@@ -462,6 +520,8 @@ function OrderModal({ products, packages, profiles, order, isAdmin, onRequestCor
               {productPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </>
+        )}
+        </>
         )}
         <label>Customer name</label>
         <input value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Full name" />
@@ -576,7 +636,7 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
-function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, latestRemarks, upsellsByOrder, lastSeen, session, refresh }) {
+function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, productSets, latestRemarks, upsellsByOrder, lastSeen, session, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
   const [statusTab, setStatusTab] = useState('all');
@@ -632,6 +692,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   useEffect(() => { setCurrentPage(1); }, [search, activeProduct, activeState, statusTab, submittedOnly, dateFilter, fromDate, toDate]);
   const staffSubmittedCount = orders.filter(o => o.created_by).length;
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+  const setName = id => ((productSets || []).find(s => s.id === id) || {}).name || '—';
   const personName = id => (profiles.find(s => s.id === id) || {}).full_name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
   const giftName = pkgId => {
@@ -709,6 +770,13 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
   async function adjustStockForOrder(o, direction) {
     const qtyDelta = direction * (o.quantity || 1);
+    if (o.set_id) {
+      await supabase.rpc('adjust_stock_for_set', { p_set_id: o.set_id, p_delta_units: qtyDelta });
+      if (o.dispatch_id) {
+        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: o.set_id, p_delta_units: qtyDelta });
+      }
+      return; // sets don't carry a package/gift in this version
+    }
     const product = products.find(p => p.id === o.product_id);
     if (product) {
       await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: qtyDelta });
@@ -890,7 +958,15 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {(() => {
+                  {o.set_id ? (
+                    <>
+                      📦 {setName(o.set_id)} {o.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity}</span>}
+                      <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
+                      {o.created_by && (
+                        <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>
+                      )}
+                    </>
+                  ) : (() => {
                     const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
                     const current = getCurrentPackage(o, orderUpsells);
                     const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
@@ -1108,8 +1184,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         </div>
       )}
 
-      {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
-      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
+      {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
+      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
       {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {confirmDeleteOrder && (
@@ -1272,6 +1348,13 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
   const filtered = todayOnly ? byStatus.filter(isToday) : byStatus;
 
   async function deductStockForDelivery(o) {
+    if (o.set_id) {
+      await supabase.rpc('adjust_stock_for_set', { p_set_id: o.set_id, p_delta_units: -(o.quantity || 1) });
+      if (o.dispatch_id) {
+        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: o.set_id, p_delta_units: -(o.quantity || 1) });
+      }
+      return;
+    }
     const product = products.find(p => p.id === o.product_id);
     if (product) {
       await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: -(o.quantity || 1) });
@@ -1494,6 +1577,8 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
   const [name, setName] = useState('');
   const [managingPackages, setManagingPackages] = useState(null);
   const [managingCommission, setManagingCommission] = useState(null);
+  const [tab, setTab] = useState('products');
+  const [priceEdits, setPriceEdits] = useState({});
   async function add() {
     if (!name.trim()) return;
     await supabase.from('products').insert({ name: name.trim() });
@@ -1508,16 +1593,40 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
     }
     refresh();
   }
+  async function saveDefaultPrice(p) {
+    const val = parseFloat(priceEdits[p.id]);
+    if (isNaN(val)) return;
+    await supabase.from('products').update({ default_price: val }).eq('id', p.id);
+    setPriceEdits({ ...priceEdits, [p.id]: '' });
+    refresh();
+  }
   return (
     <div>
-      <div className="topbar"><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Add packages to bundle a free gift with a product.</p></div></div>
+      <div className="topbar"><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Add packages to bundle a free gift with a product, or group several products together as a Set.</p></div></div>
+      <div className="product-tabs">
+        <span className={'ptab' + (tab === 'products' ? ' active' : '')} onClick={() => setTab('products')}>Products</span>
+        <span className={'ptab' + (tab === 'sets' ? ' active' : '')} onClick={() => setTab('sets')}>Sets</span>
+      </div>
+      {tab === 'sets' ? (
+        <ProductSetsPage products={products} refresh={refresh} />
+      ) : (
+      <>
       <div className="list-manage" style={{ marginBottom: '18px' }}>
         {products.map(p => {
           const pkgCount = (packages || []).filter(pk => pk.product_id === p.id).length;
           return (
             <div key={p.id} className="list-manage-row">
-              <span>{p.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}</span></span>
+              <span>
+                {p.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}{p.default_price ? ` · default ₦${Number(p.default_price).toLocaleString()}` : ''}</span>
+              </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <input
+                  type="number" min="0" placeholder="default price"
+                  value={priceEdits[p.id] ?? ''}
+                  onChange={e => setPriceEdits({ ...priceEdits, [p.id]: e.target.value })}
+                  style={{ width: '110px', fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                />
+                <button className="link-btn" onClick={() => saveDefaultPrice(p)}>Save price</button>
                 <button className="link-btn" onClick={() => setManagingPackages(p)}>Manage packages</button>
                 <button className="link-btn" onClick={() => setManagingCommission(p)}>Standard & upsell commission</button>
                 <button className="tiny-x" onClick={() => remove(p.id)}>Remove</button>
@@ -1531,6 +1640,8 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
         <input value={name} onChange={e => setName(e.target.value)} placeholder="New product name" />
         <button className="btn primary" onClick={add} style={{ flex: '0 0 auto' }}>Add product</button>
       </div>
+      </>
+      )}
       {managingPackages && <ProductPackagesModal product={managingPackages} products={products} onClose={() => { setManagingPackages(null); refresh(); }} />}
       {managingCommission && <CommissionRuleModal product={managingCommission} profiles={profiles} onClose={() => setManagingCommission(null)} />}
     </div>

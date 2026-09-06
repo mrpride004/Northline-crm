@@ -2879,3 +2879,181 @@ export function MessagesPage({ profile }) {
     </div>
   );
 }
+
+// ---------- Product Sets: bundle multiple distinct products as one sellable unit ----------
+export function ProductSetsPage({ products, refresh }) {
+  const [sets, setSets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const [{ data: setRows }, { data: itemRows }] = await Promise.all([
+      supabase.from('product_sets').select('*').order('created_at', { ascending: false }),
+      supabase.from('product_set_items').select('*'),
+    ]);
+    const withItems = (setRows || []).map(s => ({ ...s, items: (itemRows || []).filter(i => i.set_id === s.id) }));
+    setSets(withItems);
+    setLoading(false);
+  }
+
+  const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+
+  async function toggleActive(set) {
+    await supabase.from('product_sets').update({ active: !set.active }).eq('id', set.id);
+    load();
+  }
+
+  if (loading) return <div className="loading">Loading sets…</div>;
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Product Sets</h1><p className="page-sub">Bundle two or more products together as one sellable item — each still draws from its own central and agent stock.</p></div>
+        <button className="btn primary" onClick={() => setEditing({})}>+ New set</button>
+      </div>
+      {sets.length === 0 ? (
+        <div className="empty">No sets created yet.</div>
+      ) : (
+        <div className="list-manage">
+          {sets.map(s => (
+            <div key={s.id} className="list-manage-row">
+              <span>
+                <strong>{s.name}</strong>{' '}
+                <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
+                  · {s.items.map(i => `${i.quantity_per_set}× ${prodName(i.product_id)}`).join(' + ')}
+                  · {s.price_mode === 'flat' ? `₦${Number(s.flat_price || 0).toLocaleString()} flat` : 'Sum of component prices'}
+                </span>
+                {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Off</span>}
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="link-btn" onClick={() => setEditing(s)}>Edit</button>
+                <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'On — turn off' : 'Off — turn on'}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {editing && <ProductSetModal set={editing} products={products} onClose={() => { setEditing(null); load(); refresh && refresh(); }} />}
+    </div>
+  );
+}
+
+function ProductSetModal({ set, products, onClose }) {
+  const isNew = !set.id;
+  const [name, setName] = useState(set.name || '');
+  const [priceMode, setPriceMode] = useState(set.price_mode || 'flat');
+  const [flatPrice, setFlatPrice] = useState(set.flat_price || '');
+  const [items, setItems] = useState({}); // productId -> quantity_per_set
+  const [loadingItems, setLoadingItems] = useState(!isNew);
+
+  useEffect(() => {
+    if (isNew) return;
+    (async () => {
+      const { data } = await supabase.from('product_set_items').select('*').eq('set_id', set.id);
+      const map = {};
+      (data || []).forEach(i => { map[i.product_id] = i.quantity_per_set; });
+      setItems(map);
+      setLoadingItems(false);
+    })();
+  }, []);
+
+  function toggleProduct(id) {
+    setItems(prev => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = 1;
+      return next;
+    });
+  }
+  function setQty(id, qty) {
+    setItems(prev => ({ ...prev, [id]: Math.max(1, parseInt(qty, 10) || 1) }));
+  }
+
+  const sumPrice = Object.entries(items).reduce((sum, [pid, qty]) => {
+    const p = products.find(pp => pp.id === pid);
+    return sum + (p && p.default_price ? Number(p.default_price) * qty : 0);
+  }, 0);
+
+  async function save() {
+    const productIds = Object.keys(items);
+    if (!name.trim() || productIds.length < 2) {
+      alert('Give the set a name and select at least 2 different products.');
+      return;
+    }
+    const payload = { name: name.trim(), price_mode: priceMode, flat_price: priceMode === 'flat' ? (parseFloat(flatPrice) || 0) : null };
+    let setId = set.id;
+    if (isNew) {
+      const { data, error } = await supabase.from('product_sets').insert(payload).select().single();
+      if (error) { alert(error.message); return; }
+      setId = data.id;
+    } else {
+      await supabase.from('product_sets').update(payload).eq('id', set.id);
+      await supabase.from('product_set_items').delete().eq('set_id', set.id);
+    }
+    await supabase.from('product_set_items').insert(
+      productIds.map(pid => ({ set_id: setId, product_id: pid, quantity_per_set: items[pid] }))
+    );
+    onClose();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>{isNew ? 'New' : 'Edit'} product set</h3>
+        <label style={{ marginTop: 0 }}>Set name</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Complete Care Bundle" />
+
+        <label>Which products are in this set?</label>
+        {loadingItems ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+            {products.map(p => (
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
+                <input type="checkbox" checked={!!items[p.id]} onChange={() => toggleProduct(p.id)} />
+                <span style={{ flex: 1 }}>{p.name}</span>
+                {items[p.id] && (
+                  <input
+                    type="number" min="1" value={items[p.id]}
+                    onChange={e => setQty(p.id, e.target.value)}
+                    style={{ width: '60px', padding: '4px 6px', border: '1px solid #DEDAD0', borderRadius: '4px', fontSize: '12px' }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>The number next to a checked product is how many of that product go into one unit of this set.</p>
+
+        <label>Pricing</label>
+        <select value={priceMode} onChange={e => setPriceMode(e.target.value)}>
+          <option value="flat">One flat price for the whole set</option>
+          <option value="sum">Sum of each product's default price</option>
+        </select>
+        {priceMode === 'flat' ? (
+          <>
+            <label>Flat price (₦)</label>
+            <input type="number" min="0" value={flatPrice} onChange={e => setFlatPrice(e.target.value)} />
+          </>
+        ) : (
+          <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '8px' }}>
+            Calculated from products' default prices: ₦{sumPrice.toLocaleString()}. Set a default price on each product (in Products) for this to work — components without one count as ₦0.
+          </p>
+        )}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save}>Save set</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function setStockLabel(set, products) {
+  // Client-side estimate of whether a set looks in-stock, for disabling the option in a dropdown.
+  if (!set.items || set.items.length === 0) return { inStock: true, text: '' };
+  const short = set.items.some(i => {
+    const p = products.find(pp => pp.id === i.product_id);
+    return !p || p.stock_quantity < i.quantity_per_set;
+  });
+  return { inStock: !short, text: short ? ' — OUT OF STOCK' : '' };
+}
