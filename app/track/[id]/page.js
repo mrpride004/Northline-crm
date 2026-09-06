@@ -37,7 +37,7 @@ export default function TrackPage() {
       justifyContent: 'center', fontFamily: "'Inter', -apple-system, sans-serif", padding: '24px',
     }}>
       <div style={{ background: '#F6F4EF', borderRadius: '10px', padding: '32px 28px', width: '380px', maxWidth: '100%', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
-        <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '15px', color: '#1F4D44', marginBottom: '4px' }}>Northline Dispatch</div>
+        <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '15px', color: '#1F4D44', marginBottom: '4px' }}>Trailblazer</div>
         <h1 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '22px', margin: '0 0 16px 0' }}>Track your order</h1>
 
         {loading && <p style={{ color: '#4B5566', fontSize: '14px' }}>Loading…</p>}

@@ -65,7 +65,7 @@ export async function POST(request) {
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || '';
   const trackLink = baseUrl ? `${baseUrl}/track/${orderId}` : '';
-  const message = `Hi ${customerName || 'there'}, we've received your order (${orderId.slice(0, 8)}) and it's being processed.${trackLink ? ` Track it here: ${trackLink}` : ''} — Northline`;
+  const message = `Hi ${customerName || 'there'}, we've received your order (${orderId.slice(0, 8)}) and it's being processed.${trackLink ? ` Track it here: ${trackLink}` : ''} — Trailblazer`;
 
   const results = [];
   if (sendSms) results.push(await sendSMS(phone, message));

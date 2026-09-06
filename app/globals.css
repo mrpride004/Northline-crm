@@ -109,7 +109,17 @@ select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm
 .mobile-menu-btn{display:none; background:none; border:1px solid var(--line); border-radius:6px; padding:7px 11px; cursor:pointer; font-size:17px; line-height:1;}
 .mobile-backdrop{display:none;}
 
+.desktop-only{display:block;}
+.mobile-only{display:none;}
+.mobile-card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-md); padding:14px; margin-bottom:10px;}
+.mobile-card-row{display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:5px 0;}
+.mobile-card-label{font-size:11px; color:var(--ink-soft); flex:0 0 auto;}
+.mobile-card-value{font-size:13px; text-align:right;}
+
 @media (max-width: 860px){
+  .desktop-only{display:none;}
+  .mobile-only{display:block;}
+
   .app{position:relative; overflow-x:hidden;}
   .sidebar{
     position:fixed; top:0; left:0; height:100vh; z-index:45; width:230px;
@@ -130,5 +140,12 @@ select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm
   .gate-card{width:88vw; padding:30px 22px;}
   .product-tabs{overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch;}
   .ptab{flex:0 0 auto;}
+  thead th{font-size:10.5px; padding:8px 10px;}
+  tbody td{font-size:12.5px; padding:9px 10px;}
+  tbody td:first-child, thead th:first-child{
+    position:sticky; left:0; z-index:2; background:var(--panel);
+    box-shadow:2px 0 4px rgba(0,0,0,.06);
+  }
+  thead th:first-child{background:#FAF8F4;}
 }
 

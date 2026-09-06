@@ -152,7 +152,7 @@ export default function Dashboard() {
       <div className={'mobile-backdrop' + (mobileMenuOpen ? ' mobile-open' : '')} onClick={() => setMobileMenuOpen(false)} />
       <div className={'sidebar' + (mobileMenuOpen ? ' mobile-open' : '')}>
         <div className="brand">
-          <p className="brand-name">Northline</p>
+          <p className="brand-name">Trailblazer</p>
           <div className="brand-role">{profile.full_name} · {roleLabel}</div>
         </div>
         <div className="nav">
@@ -1065,6 +1065,8 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
         <span className={'ptab' + (todayOnly ? ' active' : '')} onClick={() => setTodayOnly(!todayOnly)}>📅 Today only</span>
       </div>
       {filtered.length === 0 ? <div className="empty">No deliveries here yet.</div> : (
+        <>
+        <div className="desktop-only">
         <table>
           <thead><tr><th>Order</th><th>Product & package</th><th>Total to collect</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th>Last updated</th><th></th></tr></thead>
           <tbody>
@@ -1136,6 +1138,49 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
             ))}
           </tbody>
         </table>
+        </div>
+
+        <div className="mobile-only">
+          {filtered.map(o => {
+            const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+            return (
+              <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status) }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span className="oid">{o.id.slice(0, 8)}</span>
+                  <span className={'pill ' + o.status}>{o.status}</span>
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 600 }}>{prodName(current.productId)} ×{current.quantity}</div>
+                {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
+                {current.changed && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>⬆ Package changed — deliver this one</div>}
+                <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value">{o.customer}</span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">To collect</span><span className="mobile-card-value" style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Delivery fee</span><span className="mobile-card-value"><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Payment</span><span className="mobile-card-value">{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span></div>
+                {(o.reschedule_date || o.preferred_time) && (
+                  <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
+                )}
+                {latestRemarks && latestRemarks[o.id] && (
+                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
+                )}
+                <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {o.status === 'New' && <span style={{ fontSize: '12px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}
+                  {o.status !== 'Delivered' && o.status !== 'Cancelled' && o.status !== 'New' && <>
+                    <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Dispatched' })}>In Transit</button>
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>
+                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Cancelled' })}>Cancel</button>
+                  </>}
+                  {o.status === 'Delivered' && o.payment_status !== 'Paid' && <button className="btn" onClick={() => markPaid(o)}>Mark Paid</button>}
+                  <button className="btn" onClick={() => copyOrderInfo(o)}>Copy info</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        </>
       )}
       {statusChanging && (
         <StatusRemarkModal

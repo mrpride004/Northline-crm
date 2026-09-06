@@ -43,7 +43,7 @@ export default function LoginPage() {
   return (
     <div className="gate">
       <div className="gate-card">
-        <div className="gate-mark">Northline Dispatch</div>
+        <div className="gate-mark">Trailblazer</div>
         <h1 className="gate-title">Sign in</h1>
         <div className="gate-sub">Use the username or email and password you were given.</div>
         {error && <div className="gate-error">{error}</div>}
