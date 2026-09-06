@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -251,18 +251,23 @@ function DashboardInner() {
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
+    { key: 'messages', label: 'Messages' },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
     { key: 'dashboard', label: 'My orders', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
     { key: 'commission', label: 'My Commission' },
+    { key: 'messages', label: 'Messages' },
   ] : profile.role === 'dispatch' ? [
     { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     { key: 'mystock', label: 'My stock' },
+    { key: 'messages', label: 'Messages' },
   ] : isInventoryManager ? [
     { key: 'dashboard', label: 'Inventory' },
+    { key: 'messages', label: 'Messages' },
   ] : [
     { key: 'dashboard', label: 'Submit orders' },
+    { key: 'messages', label: 'Messages' },
   ];
 
   const finalNavItems = (profile.allowed_sections && profile.allowed_sections.length > 0)
@@ -311,6 +316,7 @@ function DashboardInner() {
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
+        {page === 'messages' && <MessagesPage profile={profile} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} session={session} profile={profile} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
@@ -594,7 +600,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [actionsOpenFor, setActionsOpenFor] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 25;
-  const [todayOnly, setTodayOnly] = useState(false);
+  const [dateFilter, setDateFilter] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
   const byState = activeState === 'all' ? byProduct : byProduct.filter(o => o.state === activeState);
@@ -602,19 +610,26 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const bySubmitted = submittedOnly ? byStatus.filter(o => o.created_by) : byStatus;
   const todayStr = new Date().toDateString();
   const isToday = o => new Date(o.created_at).toDateString() === todayStr || (o.reschedule_date && new Date(o.reschedule_date).toDateString() === todayStr);
-  const byToday = todayOnly ? bySubmitted.filter(isToday) : bySubmitted;
+  const byDate = dateFilter === 'today' ? bySubmitted.filter(isToday)
+    : dateFilter === 'custom' ? bySubmitted.filter(o => {
+        const created = new Date(o.created_at);
+        if (fromDate && created < new Date(fromDate)) return false;
+        if (toDate && created > new Date(toDate + 'T23:59:59')) return false;
+        return true;
+      })
+    : bySubmitted;
   const filtered = search.trim()
-    ? byToday.filter(o => {
+    ? byDate.filter(o => {
         const q = search.trim().toLowerCase();
         return o.id.toLowerCase().includes(q) || (o.customer || '').toLowerCase().includes(q) || (o.phone || '').toLowerCase().includes(q);
       })
-    : bySubmitted;
+    : byDate;
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(currentPage, totalPages);
   const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const usedStates = [...new Set(orders.map(o => o.state).filter(Boolean))].sort();
 
-  useEffect(() => { setCurrentPage(1); }, [search, activeProduct, activeState, statusTab, submittedOnly, todayOnly]);
+  useEffect(() => { setCurrentPage(1); }, [search, activeProduct, activeState, statusTab, submittedOnly, dateFilter, fromDate, toDate]);
   const staffSubmittedCount = orders.filter(o => o.created_by).length;
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const personName = id => (profiles.find(s => s.id === id) || {}).full_name || '—';
@@ -846,8 +861,16 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           const showCount = s !== 'Delivered' && s !== 'Cancelled';
           return <span key={s} className={'ptab' + (statusTab === s ? ' active' : '')} onClick={() => setStatusTab(s)}>{s}{showCount ? ` (${count})` : ''}</span>;
         })}
-        <span className={'ptab' + (todayOnly ? ' active' : '')} onClick={() => setTodayOnly(!todayOnly)}>📅 Today only</span>
+        <span className={'ptab' + (dateFilter === 'all' ? ' active' : '')} onClick={() => setDateFilter('all')}>All dates</span>
+        <span className={'ptab' + (dateFilter === 'today' ? ' active' : '')} onClick={() => setDateFilter('today')}>📅 Today only</span>
+        <span className={'ptab' + (dateFilter === 'custom' ? ' active' : '')} onClick={() => setDateFilter('custom')}>📆 Custom range</span>
       </div>
+      {dateFilter === 'custom' && (
+        <div className="row2" style={{ maxWidth: '420px', marginBottom: '16px' }}>
+          <div><label className="field-label" style={{ marginTop: 0 }}>From</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+          <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+        </div>
+      )}
 
       {products.length > 0 &&
         <div className="product-tabs">
@@ -980,7 +1003,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             const current = getCurrentPackage(o, orderUpsells);
             const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
             return (
-              <div key={o.id} className="mobile-card">
+              <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status) }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span className="oid">{o.id.slice(0, 8)}</span>
                   {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
@@ -1320,7 +1343,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
     <div>
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
       <div className="stats" style={{ marginBottom: '18px' }}>
-        <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'New').length}</div><div className="stat-label">New orders</div></div>
+        <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Confirmed').length}</div><div className="stat-label">New orders</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
       </div>
@@ -1344,7 +1367,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
               const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
               const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
               return (
-              <tr key={o.id}>
+              <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
                   {prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}
@@ -1407,7 +1430,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
             const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
             const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
             return (
-              <div key={o.id} className="mobile-card" style={{ border: unpaidDelivered ? '2px solid #B0483F' : undefined }}>
+              <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status), border: unpaidDelivered ? '2px solid #B0483F' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span className="oid">{o.id.slice(0, 8)}</span>
                   {o.status === 'New' ? (
@@ -1478,7 +1501,11 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
     refresh();
   }
   async function remove(id) {
-    await supabase.from('products').delete().eq('id', id);
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) {
+      alert('Could not remove this product — it already has orders, packages, or stock history tied to it, so deleting it would break those records. If you no longer want to sell it, just stop assigning new orders to it instead.');
+      return;
+    }
     refresh();
   }
   return (
@@ -1535,6 +1562,35 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     { key: 'inventory', label: 'Inventory' },
   ];
   const visibleStaffList = roleTab === 'all' ? staffList : staffList.filter(s => s.role === roleTab);
+  const [statePrefs, setStatePrefs] = useState({});
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('state_dispatch_preference').select('*');
+      const map = {};
+      (data || []).forEach(r => { map[r.state] = r; });
+      setStatePrefs(map);
+    })();
+  }, []);
+
+  async function setAsAutoAssign(agent) {
+    if (!agent.state) { alert('This dispatch partner needs a state set first (edit them in Supabase or recreate with a state).'); return; }
+    await supabase.from('state_dispatch_preference').upsert({
+      state: agent.state, dispatch_id: agent.id, active: true, assignment_mode: 'preferred', updated_at: new Date().toISOString(),
+    });
+    const { data } = await supabase.from('state_dispatch_preference').select('*');
+    const map = {};
+    (data || []).forEach(r => { map[r.state] = r; });
+    setStatePrefs(map);
+  }
+
+  async function clearAutoAssign(agent) {
+    await supabase.from('state_dispatch_preference').update({ active: false }).eq('state', agent.state);
+    const { data } = await supabase.from('state_dispatch_preference').select('*');
+    const map = {};
+    (data || []).forEach(r => { map[r.state] = r; });
+    setStatePrefs(map);
+  }
 
   function toggleIn(id, list, setList) {
     setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
@@ -1580,6 +1636,9 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
   }
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [settingPasswordFor, setSettingPasswordFor] = useState(null);
+  const [newPasswordValue, setNewPasswordValue] = useState('');
+  const [passwordSetMsg, setPasswordSetMsg] = useState('');
   async function removeUser(id) {
     await fetch('/api/delete-user', {
       method: 'POST',
@@ -1588,6 +1647,18 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     });
     setConfirmDeleteId(null);
     refresh();
+  }
+
+  async function setPasswordForUser(person) {
+    if (newPasswordValue.length < 6) { setPasswordSetMsg('At least 6 characters.'); return; }
+    const res = await fetch('/api/set-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userId: person.id, newPassword: newPasswordValue }),
+    });
+    const body = await res.json();
+    setPasswordSetMsg(res.ok ? `✓ New password for ${person.full_name.split(' ')[0]}: ${newPasswordValue}` : (body.error || 'Something went wrong.'));
+    if (res.ok) setNewPasswordValue('');
   }
 
   async function saveAccess(id, productList, sectionList, canCreateOrders, allowedStatuses) {
@@ -1630,9 +1701,28 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                     <button className="btn" style={{ background: '#B0483F', color: '#fff', borderColor: '#B0483F' }} onClick={() => removeUser(s.id)}>Yes, delete</button>
                     <button className="btn" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
                   </>
+                ) : settingPasswordFor === s.id ? (
+                  <>
+                    <input
+                      type="text" placeholder="New password" value={newPasswordValue}
+                      onChange={e => setNewPasswordValue(e.target.value)}
+                      style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px', width: '140px' }}
+                    />
+                    <button className="btn primary" onClick={() => setPasswordForUser(s)}>Save</button>
+                    <button className="btn" onClick={() => { setSettingPasswordFor(null); setNewPasswordValue(''); setPasswordSetMsg(''); }}>Cancel</button>
+                    {passwordSetMsg && <span style={{ fontSize: '11.5px', color: '#4B5566', width: '100%' }}>{passwordSetMsg}</span>}
+                  </>
                 ) : (
                   <>
                     <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit access</button>
+                    <button className="link-btn" onClick={() => setSettingPasswordFor(s.id)}>Set password</button>
+                    {s.role === 'dispatch' && (
+                      statePrefs[s.state]?.dispatch_id === s.id && statePrefs[s.state]?.active ? (
+                        <button className="btn" style={{ background: '#EAF4F1', color: '#1F4D44' }} onClick={() => clearAutoAssign(s)}>Auto-assign: ON — turn off</button>
+                      ) : (
+                        <button className="link-btn" onClick={() => setAsAutoAssign(s)}>Set as auto-assign for {s.state || 'their state'}</button>
+                      )
+                    )}
                     <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
                     <button className="btn" style={{ color: '#B0483F' }} onClick={() => setConfirmDeleteId(s.id)}>Delete</button>
                   </>

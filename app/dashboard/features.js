@@ -235,7 +235,7 @@ export function buildOrderSummary(order, products, packages, upsells) {
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     '',
-    `${product ? product.name : '—'} × ${current.quantity} — ₦${current.unitPrice.toLocaleString()} each = ₦${current.amount.toLocaleString()}`,
+    `${product ? product.name : '—'}${current.quantity > 1 ? ` × ${current.quantity}` : ''} — ₦${current.unitPrice.toLocaleString()} each = ₦${current.amount.toLocaleString()}`,
     pkg ? `Package: ${pkg.name}` : null,
     gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
   ];
@@ -249,8 +249,6 @@ export function buildOrderSummary(order, products, packages, upsells) {
   lines.push(
     '',
     `Status: ${order.status}`,
-    `Payment: ${order.payment_status || 'Unpaid'}`,
-    order.priority === 'High' ? 'Priority: HIGH' : null,
     order.preferred_time ? `Preferred time: ${order.preferred_time}` : null,
     order.notes ? `Notes: ${order.notes}` : null,
   );
@@ -1003,9 +1001,13 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
     else userIds = [notifyTarget];
     if (userIds.length === 0) { setNotifyStatus('No one matches that selection.'); return; }
     setSendingNotify(true);
-    await sendPushNotification(session, { userIds, title: 'Message from admin', body: notifyMessage.trim(), url: '/dashboard' });
+    const text = notifyMessage.trim();
+    await supabase.from('messages').insert(
+      userIds.map(uid => ({ sender_id: profile?.id, sender_name: profile?.full_name, recipient_id: uid, body: text }))
+    );
+    await sendPushNotification(session, { userIds, title: 'Message from admin', body: text, url: '/dashboard' });
     setSendingNotify(false);
-    setNotifyStatus(`✓ Sent to ${userIds.length} ${userIds.length === 1 ? 'person' : 'people'}.`);
+    setNotifyStatus(`✓ Sent to ${userIds.length} ${userIds.length === 1 ? 'person' : 'people'} — they'll see it in Messages too.`);
     setNotifyMessage('');
   }
 
@@ -2834,6 +2836,46 @@ export function InventoryHub({ products, orders, profiles, agentStock, refresh }
       </div>
       {tab === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refresh} />}
       {tab === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refresh} />}
+    </div>
+  );
+}
+
+// ---------- Persistent Messages inbox ----------
+export function MessagesPage({ profile }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('messages').select('*').eq('recipient_id', profile.id).order('created_at', { ascending: false });
+    setMessages(data || []);
+    setLoading(false);
+    const unread = (data || []).filter(m => !m.read_at);
+    if (unread.length > 0) {
+      await supabase.from('messages').update({ read_at: new Date().toISOString() }).in('id', unread.map(m => m.id));
+    }
+  }
+
+  if (loading) return <div className="loading">Loading messages…</div>;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Messages</h1><p className="page-sub">Messages sent to you by admin.</p></div></div>
+      {messages.length === 0 ? (
+        <div className="empty">No messages yet.</div>
+      ) : (
+        <div className="list-manage">
+          {messages.map(m => (
+            <div key={m.id} className="list-manage-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                <span style={{ fontWeight: 600, fontSize: '12.5px' }}>{m.sender_name || 'Admin'}</span>
+                <span style={{ fontSize: '11px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</span>
+              </div>
+              <div style={{ fontSize: '13.5px' }}>{m.body}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
