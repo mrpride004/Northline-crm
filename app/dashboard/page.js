@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -36,6 +36,7 @@ export default function Dashboard() {
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState({});
+  const [notifMsg, setNotifMsg] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -198,6 +199,17 @@ export default function Dashboard() {
         </div>
         <div className="sidebar-foot">
           <NotificationsBell profile={profile} isAdmin={isAdmin} />
+          <button
+            className="switch-out"
+            onClick={async () => {
+              setNotifMsg('Enabling…');
+              const res = await enablePushNotifications(session, process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
+              setNotifMsg(res.ok ? '✓ Notifications on' : res.error);
+            }}
+          >
+            🔔 Enable push notifications
+          </button>
+          {notifMsg && <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 0' }}>{notifMsg}</p>}
           <button className="switch-out" onClick={signOut}>Sign out</button>
         </div>
       </div>
@@ -218,7 +230,7 @@ export default function Dashboard() {
         {isAdmin && page === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
         {isAdmin && page === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
 
-        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} refresh={refreshAll} />}
+        {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
 
@@ -572,6 +584,13 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           sendWhatsapp: settings?.whatsapp_auto_confirm === 'true',
         });
       }
+      const notifyIds = profiles
+        .filter(p => p.role === 'admin' || (p.role === 'staff' && p.active && p.id !== profile?.id))
+        .map(p => p.id);
+      sendPushNotification(session, {
+        userIds: notifyIds, title: 'New order', body: `${data.customer}${data.state ? ' · ' + data.state : ''}`,
+        url: '/dashboard',
+      });
     }
     refresh();
   }
@@ -621,6 +640,13 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     }
     if (meta === 'assigned') {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
+      const newlyAssigned = [patch.staff_id, patch.dispatch_id].filter(pid => pid && pid !== current?.staff_id && pid !== current?.dispatch_id);
+      if (newlyAssigned.length > 0) {
+        sendPushNotification(session, {
+          userIds: newlyAssigned, title: 'Order assigned to you', body: current ? current.customer : 'An order was just assigned to you.',
+          url: '/dashboard',
+        });
+      }
     }
     if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
       await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
@@ -870,7 +896,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
       {historyOrder && <OrderHistoryModal order={historyOrder} products={products} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
-      {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
+      {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} session={session} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
       {forwarding && (
         <ForwardModal
@@ -1101,74 +1127,68 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
         <>
         <div className="desktop-only">
         <table>
-          <thead><tr><th>Order</th><th>Product & package</th><th>Total to collect</th><th>Customer</th><th>Address</th><th>Delivery fee</th><th>Status</th><th>Scheduled</th><th>Payment</th><th>Last updated</th><th></th></tr></thead>
+          <thead><tr><th>Order</th><th>Product & package</th><th>To collect</th><th>Customer & delivery</th><th>Status</th><th>Payment</th><th></th></tr></thead>
           <tbody>
-            {filtered.map(o => (
-              <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
+            {filtered.map(o => {
+              const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+              const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
+              return (
+              <tr key={o.id}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {(() => {
-                    const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
-                    const current = getCurrentPackage(o, orderUpsells);
-                    return (
-                      <>
-                        {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
-                        <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
-                        {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
-                        {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
-                        {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
-                        {current.changed && (
-                          <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
-                            ⬆ Customer changed package — deliver this, not the original
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
+                  {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
+                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
+                  {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                  {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                  {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
+                  {current.changed && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⬆ Package changed — deliver this</div>}
                 </td>
                 <td style={{ fontWeight: 600 }}>
-                  {(() => {
-                    const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
-                    return <div>₦{current.amount.toLocaleString()}</div>;
-                  })()}
+                  <div>₦{current.amount.toLocaleString()}</div>
+                  <div style={{ fontWeight: 400, marginTop: '4px' }}><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></div>
                 </td>
-                <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
-                <td style={{ fontSize: '12px', maxWidth: '220px' }}>{o.address || '—'}</td>
-                <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
                 <td>
-                  <span className={'pill ' + o.status}>{o.status}</span>
+                  {o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>
+                  <div style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '2px' }}>{o.address || '—'}</div>
+                  {(o.reschedule_date || o.preferred_time) && (
+                    <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>{o.reschedule_date ? `📅 ${o.reschedule_date}` : `⏰ ${o.preferred_time}`}</div>
+                  )}
                   {latestRemarks && latestRemarks[o.id] && (
-                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '180px', fontStyle: 'italic' }}>
-                      💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
-                    </div>
+                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
                   )}
                 </td>
-                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
-                  {o.reschedule_date && <div>📅 {o.reschedule_date}</div>}
-                  {o.preferred_time && <div>⏰ {o.preferred_time}</div>}
-                  {!o.reschedule_date && !o.preferred_time && '—'}
+                <td>
+                  {o.status === 'New' ? (
+                    <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
+                  ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
+                    <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
+                  ) : (
+                    <select
+                      className="status-sel"
+                      value={o.status}
+                      style={{ backgroundColor: statusRowColor(o.status), fontWeight: 600, border: 'none' }}
+                      onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}
+                    >
+                      {STATUSES.filter(s => s !== 'New').map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  )}
+                  <div style={{ marginTop: '8px' }}><button className="link-btn" onClick={() => copyOrderInfo(o)}>Copy info</button></div>
                 </td>
                 <td>
-                  <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
-                  {o.status === 'Delivered' && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
+                  {unpaidDelivered ? (
+                    <button
+                      onClick={() => markPaid(o)}
+                      style={{ background: '#B0483F', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      ⚠ COLLECT PAYMENT
+                    </button>
+                  ) : (
+                    <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : 'Cancelled')}>{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span>
+                  )}
                   {o.status !== 'Delivered' && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>Available after delivery</div>}
                 </td>
-                <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
-                  {o.status_updated_at ? new Date(o.status_updated_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
-                </td>
-                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {o.status === 'New' && <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}
-                  {o.status !== 'Delivered' && o.status !== 'Cancelled' && o.status !== 'New' && <>
-                    <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>{' '}
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Dispatched' })}>In Transit</button>{' '}
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>{' '}
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>{' '}
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Cancelled' })}>Cancel</button>
-                    <div style={{ marginTop: '6px' }}><button className="link-btn" onClick={() => copyOrderInfo(o)}>Copy full order info</button></div>
-                  </>}
-                </td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
         </div>
@@ -1176,11 +1196,25 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
         <div className="mobile-only">
           {filtered.map(o => {
             const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+            const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
             return (
-              <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status) }}>
+              <div key={o.id} className="mobile-card" style={{ border: unpaidDelivered ? '2px solid #B0483F' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span className="oid">{o.id.slice(0, 8)}</span>
-                  <span className={'pill ' + o.status}>{o.status}</span>
+                  {o.status === 'New' ? (
+                    <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
+                  ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
+                    <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
+                  ) : (
+                    <select
+                      className="status-sel"
+                      value={o.status}
+                      style={{ backgroundColor: statusRowColor(o.status), fontWeight: 600, border: 'none' }}
+                      onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}
+                    >
+                      {STATUSES.filter(s => s !== 'New').map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  )}
                 </div>
                 <div style={{ fontSize: '14px', fontWeight: 600 }}>{prodName(current.productId)} ×{current.quantity}</div>
                 {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
@@ -1190,23 +1224,21 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                 <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">To collect</span><span className="mobile-card-value" style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Delivery fee</span><span className="mobile-card-value"><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></span></div>
-                <div className="mobile-card-row"><span className="mobile-card-label">Payment</span><span className="mobile-card-value">{o.payment_status === 'Paid' ? 'Remitted' : 'Not remitted'}</span></div>
                 {(o.reschedule_date || o.preferred_time) && (
                   <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
                 )}
                 {latestRemarks && latestRemarks[o.id] && (
                   <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
                 )}
-                <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {o.status === 'New' && <span style={{ fontSize: '12px', color: '#8A93A0' }}>Awaiting staff confirmation</span>}
-                  {o.status !== 'Delivered' && o.status !== 'Cancelled' && o.status !== 'New' && <>
-                    <button className="btn primary" onClick={() => setStatusChanging({ order: o, newStatus: 'Delivered' })}>Delivered</button>
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Dispatched' })}>In Transit</button>
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Rescheduled' })}>Reschedule</button>
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Unreachable' })}>Unreachable</button>
-                    <button className="btn" onClick={() => setStatusChanging({ order: o, newStatus: 'Cancelled' })}>Cancel</button>
-                  </>}
-                  {o.status === 'Delivered' && o.payment_status !== 'Paid' && <button className="btn" onClick={() => markPaid(o)}>Mark Paid</button>}
+                <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                  {unpaidDelivered && (
+                    <button
+                      onClick={() => markPaid(o)}
+                      style={{ background: '#B0483F', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      ⚠ COLLECT PAYMENT
+                    </button>
+                  )}
                   <button className="btn" onClick={() => copyOrderInfo(o)}>Copy info</button>
                 </div>
               </div>
@@ -1217,7 +1249,7 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
       )}
       {statusChanging && (
         <StatusRemarkModal
-          order={statusChanging.order} newStatus={statusChanging.newStatus}
+          order={statusChanging.order} newStatus={statusChanging.newStatus} hidePaidCheckbox
           onClose={() => setStatusChanging(null)}
           onConfirm={({ remark, fee, rescheduleDate }) => applyStatusChange(statusChanging.order, statusChanging.newStatus, { remark, fee, rescheduleDate })}
         />

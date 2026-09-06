@@ -22,6 +22,55 @@ export async function logEvent({ order_id, actor_id, actor_name, event_type, fro
   await supabase.from('order_events').insert({ order_id, actor_id, actor_name, event_type, from_status, to_status, note });
 }
 
+// ---------- Push notifications ----------
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+export async function enablePushNotifications(session, vapidPublicKey) {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { ok: false, error: 'Push notifications are not supported in this browser.' };
+  }
+  if (!vapidPublicKey) return { ok: false, error: 'Push isn\'t set up yet — ask your admin to finish the server setup.' };
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return { ok: false, error: 'Notification permission was not granted.' };
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      });
+    }
+    await fetch('/api/save-push-subscription', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || 'Something went wrong enabling notifications.' };
+  }
+}
+
+export async function sendPushNotification(session, { userIds, title, body, url }) {
+  if (!session || !userIds || userIds.length === 0) return;
+  try {
+    await fetch('/api/send-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ userIds, title, body, url }),
+    });
+  } catch (e) { /* best-effort — never block the main action on this */ }
+}
+
+
 export function showToast(message) {
   if (typeof document === 'undefined') return;
   const el = document.createElement('div');
@@ -384,7 +433,7 @@ export function MyStockPage({ profile, agentStock, products }) {
 
 // ---------- Confirm order (priority + preferred time + remark, before dispatch) ----------
 // ---------- Status change with optional remark (and delivery fee if delivering) ----------
-export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
+export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, onClose, onConfirm }) {
   const [remark, setRemark] = useState('');
   const [fee, setFee] = useState(order.delivery_fee || '');
   const [rescheduleDate, setRescheduleDate] = useState(order.reschedule_date || '');
@@ -400,13 +449,17 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
           <>
             <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
             <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
-              <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
-              Has payment been remitted? (mark it Paid too)
-            </label>
-            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
-              Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
-            </p>
+            {!hidePaidCheckbox && (
+              <>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
+                  <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
+                  Has payment been remitted? (mark it Paid too)
+                </label>
+                <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
+                  Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
+                </p>
+              </>
+            )}
           </>
         )}
         {isRescheduling && (
@@ -426,7 +479,7 @@ export function StatusRemarkModal({ order, newStatus, onClose, onConfirm }) {
   );
 }
 
-export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirmed }) {
+export function ConfirmOrderModal({ order, profile, profiles, session, onClose, onConfirmed }) {
   const [priority, setPriority] = useState(order.priority || 'Normal');
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
   const [remark, setRemark] = useState('');
@@ -468,6 +521,7 @@ export function ConfirmOrderModal({ order, profile, profiles, onClose, onConfirm
     await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
     if (willAutoAssign) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation.` });
+      sendPushNotification(session, { userIds: [chosenAgent.id], title: 'New delivery assigned', body: order.customer, url: '/dashboard' });
     }
     if (remark.trim()) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
