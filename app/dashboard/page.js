@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -62,6 +62,39 @@ export default function Dashboard() {
       setLoading(false);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!profile) return;
+    const channel = supabase
+      .channel('orders-live-' + profile.id)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
+        const o = payload.new;
+        const relevant =
+          profile.role === 'admin' ||
+          (profile.role === 'staff' && (o.staff_id === profile.id || !o.staff_id)) ||
+          (profile.role === 'dispatch' && o.dispatch_id === profile.id);
+        if (!relevant) return;
+        showOrderAlert(`🔔 New order — ${o.customer}${o.state ? ' · ' + o.state : ''}`);
+        playNotificationSound();
+        refreshAll();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+        const o = payload.new;
+        const before = payload.old;
+        if (profile.role === 'dispatch' && o.dispatch_id === profile.id && before.dispatch_id !== profile.id) {
+          showOrderAlert(`🔔 New delivery assigned — ${o.customer}${o.state ? ' · ' + o.state : ''}`);
+          playNotificationSound();
+          refreshAll();
+        }
+        if (profile.role === 'staff' && o.staff_id === profile.id && before.staff_id !== profile.id) {
+          showOrderAlert(`🔔 Order assigned to you — ${o.customer}`);
+          playNotificationSound();
+          refreshAll();
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [profile]);
 
   async function refreshAll() {
     const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }] = await Promise.all([

@@ -35,6 +35,44 @@ export function showToast(message) {
   }, 1600);
 }
 
+// A more prominent, longer-lived banner for order alerts — tappable to dismiss early.
+export function showOrderAlert(message) {
+  if (typeof document === 'undefined') return;
+  const el = document.createElement('div');
+  el.textContent = message;
+  el.style.cssText = 'position:fixed; top:16px; left:50%; transform:translateX(-50%) translateY(-12px); background:#1F4D44; color:#fff; padding:13px 22px; border-radius:10px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.35); opacity:0; transition:opacity .2s ease, transform .2s ease; cursor:pointer; max-width:90vw; text-align:center;';
+  el.onclick = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); };
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(-50%) translateY(0)'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 250);
+  }, 5000);
+}
+
+// Short two-tone beep, generated on the fly — no audio file needed.
+export function playNotificationSound() {
+  if (typeof window === 'undefined' || !window.AudioContext && !window.webkitAudioContext) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    [880, 660].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, ctx.currentTime + i * 0.16);
+      gain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + i * 0.16 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.16 + 0.15);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + i * 0.16);
+      osc.stop(ctx.currentTime + i * 0.16 + 0.16);
+    });
+    setTimeout(() => ctx.close(), 500);
+  } catch (e) { /* ignore — sound is best-effort */ }
+}
+
+
 
 export function getCycleStart(date) {
   const d = new Date(date);
