@@ -51,7 +51,7 @@ a{color:var(--teal-deep);}
 .switch-out{background:none; border:none; color:#A9C6BD; font-size:12px; cursor:pointer; padding:0;}
 .switch-out:hover{color:#fff;}
 
-.main{flex:1; padding:28px 34px; overflow-y:auto;}
+.main{flex:1; min-width:0; padding:28px 34px; overflow-y:auto; overflow-x:hidden;}
 .topbar{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:22px;}
 .page-title{font-family:'Source Serif 4', Georgia, serif; font-size:24px; margin:0 0 4px 0;}
 .page-sub{color:var(--ink-soft); font-size:14px; margin:0;}
@@ -69,8 +69,9 @@ a{color:var(--teal-deep);}
 .ptab{padding:7px 14px; border-radius:20px; font-size:12.5px; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:var(--ink-soft);}
 .ptab.active{background:var(--ink); color:#fff; border-color:var(--ink);}
 
-table{width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-md); overflow:hidden;}
-thead th{text-align:left; font-size:11.5px; color:var(--ink-soft); font-weight:600; padding:10px 14px; border-bottom:1px solid var(--line); background:#FAF8F4;}
+table{width:100%; max-width:100%; display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-md);}
+thead, tbody, tr{display:table; width:100%; table-layout:auto;}
+thead th{text-align:left; font-size:11.5px; color:var(--ink-soft); font-weight:600; padding:10px 14px; border-bottom:1px solid var(--line); background:#FAF8F4; white-space:nowrap;}
 tbody td{padding:12px 14px; font-size:14.5px; border-bottom:1px solid var(--line); vertical-align:middle;}
 tbody tr:last-child td{border-bottom:none;}
 tbody tr:hover{background:#FAF8F4;}
@@ -124,8 +125,6 @@ select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm
   .topbar > div:last-child{width:100%; justify-content:flex-start;}
   .stats{flex-wrap:wrap;}
   .stat{min-width:130px; flex:1 1 130px;}
-  table{display:block; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
-  thead, tbody, tr{display:table; width:100%; table-layout:auto;}
   .modal{width:94vw; padding:18px; max-height:90vh;}
   .row2{flex-direction:column;}
   .gate-card{width:88vw; padding:30px 22px;}

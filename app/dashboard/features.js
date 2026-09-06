@@ -123,32 +123,25 @@ export async function copyToClipboard(text, label) {
 }
 
 export function buildOrderSummary(order, products, packages, upsells) {
-  const product = (products || []).find(p => p.id === order.product_id);
-  const pkg = order.package_id ? (packages || []).find(p => p.id === order.package_id) : null;
+  const current = getCurrentPackage(order, upsells);
+  const product = (products || []).find(p => p.id === current.productId);
+  const pkg = current.packageId ? (packages || []).find(p => p.id === current.packageId) : null;
   const gift = pkg && pkg.gift_product_id ? (products || []).find(p => p.id === pkg.gift_product_id) : null;
-  const activeUpsells = (upsells || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status));
-  const originalTotal = (order.quantity || 1) * Number(order.unit_price || 0);
-  const upsellTotal = activeUpsells.reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0);
 
   const lines = [
     `Order: ${order.id}`,
-    `Created: ${new Date(order.created_at).toLocaleString()}`,
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     '',
-    'ORIGINAL ORDER (locked)',
-    `${product ? product.name : '—'} × ${order.quantity || 1} — ₦${Number(order.unit_price || 0).toLocaleString()} each = ₦${originalTotal.toLocaleString()}`,
+    `${product ? product.name : '—'} × ${current.quantity} — ₦${current.unitPrice.toLocaleString()} each = ₦${current.amount.toLocaleString()}`,
     pkg ? `Package: ${pkg.name}` : null,
     gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
   ];
 
-  if (activeUpsells.length > 0) {
-    lines.push('', 'UPSELL(S)');
-    activeUpsells.forEach(u => {
-      const upsellProduct = (products || []).find(p => p.id === u.upsell_product_id);
-      lines.push(`+${u.additional_quantity} ${upsellProduct ? upsellProduct.name : '—'} — ₦${Number(u.unit_price || 0).toLocaleString()} each = ₦${Number(u.upsell_amount || 0).toLocaleString()} (${u.commission_status})`);
-    });
-    lines.push('', `CURRENT TOTAL: ₦${(originalTotal + upsellTotal).toLocaleString()}`);
+  if (current.changed) {
+    const prevProduct = (products || []).find(p => p.id === current.previousProductId);
+    const prevPkg = current.previousPackageId ? (packages || []).find(p => p.id === current.previousPackageId) : null;
+    lines.push(`(Customer moved to this package — originally ordered ${prevProduct ? prevProduct.name : '—'}${prevPkg ? ' · ' + prevPkg.name : ''})`);
   }
 
   lines.push(
@@ -162,11 +155,39 @@ export function buildOrderSummary(order, products, packages, upsells) {
   return lines.filter(l => l !== null).join('\n');
 }
 
-export function orderTotal(o) {
-  const qty = o.quantity || 1;
-  const unit = Number(o.unit_price || 0);
+// Finds the active package-change (the newest one that isn't rejected/reversed).
+// A confirmed upsell REPLACES the original package for delivery/revenue purposes —
+// the customer moved to a different package, they don't receive both.
+export function activeUpsellFor(upsells) {
+  const active = (upsells || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status));
+  if (active.length === 0) return null;
+  return active.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+}
+
+// What should actually be delivered and billed for this order right now.
+export function getCurrentPackage(order, upsells) {
+  const active = activeUpsellFor(upsells);
+  if (active) {
+    return {
+      productId: active.upsell_product_id, packageId: active.upsell_package_id,
+      quantity: active.additional_quantity, unitPrice: Number(active.unit_price || 0),
+      amount: Number(active.additional_quantity || 1) * Number(active.unit_price || 0),
+      changed: true,
+      previousProductId: order.product_id, previousPackageId: order.package_id,
+    };
+  }
+  return {
+    productId: order.product_id, packageId: order.package_id,
+    quantity: order.quantity || 1, unitPrice: Number(order.unit_price || 0),
+    amount: (order.quantity || 1) * Number(order.unit_price || 0),
+    changed: false, previousProductId: null, previousPackageId: null,
+  };
+}
+
+export function orderTotal(o, upsells) {
+  const current = getCurrentPackage(o, upsells);
   const fee = Number(o.delivery_fee || 0);
-  return qty * unit - fee;
+  return current.amount - fee;
 }
 
 export async function sendConfirmation({ phone, customerName, orderId, sendSms, sendWhatsapp }) {
@@ -455,11 +476,24 @@ export function ReportsPage({ orders, profiles, products, session }) {
   const [lastSeen, setLastSeen] = useState({});
   const [detailPerson, setDetailPerson] = useState(null);
   const [movements, setMovements] = useState([]);
+  const [upsellsByOrder, setUpsellsByOrder] = useState({});
 
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(60);
       setMovements(data || []);
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('upsells').select('*');
+      const map = {};
+      (data || []).forEach(u => {
+        if (!map[u.original_order_id]) map[u.original_order_id] = [];
+        map[u.original_order_id].push(u);
+      });
+      setUpsellsByOrder(map);
     })();
   }, []);
 
@@ -510,7 +544,7 @@ export function ReportsPage({ orders, profiles, products, session }) {
   const scoped = orders.filter(inRange);
   const delivered = scoped.filter(o => o.status === 'Delivered');
   const cancelled = scoped.filter(o => o.status === 'Cancelled');
-  const revenue = delivered.reduce((sum, o) => sum + orderTotal(o), 0);
+  const revenue = delivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
   const totalDeliveryCharges = delivered.reduce((sum, o) => sum + Number(o.delivery_fee || 0), 0);
 
   function buildPerformance(role) {
@@ -607,7 +641,7 @@ export function ReportsPage({ orders, profiles, products, session }) {
               {products.map(p => {
                 const prodOrders = scoped.filter(o => o.product_id === p.id);
                 const prodDelivered = prodOrders.filter(o => o.status === 'Delivered');
-                const prodRevenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o), 0);
+                const prodRevenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
                 return (
                   <tr key={p.id}>
                     <td>{p.name}</td>
@@ -1810,21 +1844,25 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>Add upsell · {order.customer}</h3>
+        <h3>Change package · {order.customer}</h3>
         <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px' }}>
-          <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px', fontWeight: 600 }}>ORIGINAL CONFIRMED ORDER (locked)</div>
+          <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px', fontWeight: 600 }}>ORIGINALLY ORDERED (locked, kept for history)</div>
           <div style={{ fontSize: '13.5px' }}>{originalProduct ? originalProduct.name : '—'}{originalPackage ? ` · ${originalPackage.name}` : ''}</div>
           <div style={{ fontSize: '12px', color: '#8A93A0' }}>Quantity: {order.quantity || 1} · ₦{Number(order.unit_price || 0).toLocaleString()} each</div>
         </div>
+        <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '-6px', marginBottom: '14px' }}>
+          Use this when the customer has decided to go with a different package instead — not on top of the original.
+          Dispatch will only deliver what you enter below; the original package above will no longer be sent.
+        </p>
 
-        <label style={{ marginTop: 0 }}>Upsell product</label>
+        <label style={{ marginTop: 0 }}>New product</label>
         <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); setUnitPrice(''); }}>
           <option value="">— Select product —</option>
           {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         {upsellPackages.length > 0 && (
           <>
-            <label>Upsell package (optional)</label>
+            <label>New package (optional)</label>
             <select value={upsellPackageId} onChange={e => onPackageChange(e.target.value)}>
               <option value="">— No package —</option>
               {upsellPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1832,7 +1870,7 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
           </>
         )}
         <div className="row2">
-          <div><label>Additional quantity</label><input type="number" min="1" value={additionalQuantity} onChange={e => setAdditionalQuantity(e.target.value)} /></div>
+          <div><label>Quantity to deliver</label><input type="number" min="1" value={additionalQuantity} onChange={e => setAdditionalQuantity(e.target.value)} /></div>
           <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
         </div>
         <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '10px' }}>

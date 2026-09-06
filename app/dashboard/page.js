@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -709,27 +709,32 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
-                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
-                  {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
-                  {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
-                  {o.created_by && (
-                    <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>
-                      ✎ Submitted by {personName(o.created_by)}
-                    </div>
-                  )}
-                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
-                    <div style={{ marginTop: '4px' }}>
-                      {upsellsByOrder[o.id].map(u => (
-                        <div key={u.id} style={{ fontSize: '10.5px', background: '#EAF4F1', color: '#1F4D44', borderRadius: '10px', padding: '2px 8px', display: 'inline-block', marginRight: '4px', marginBottom: '2px' }}>
-                          ⬆ +{u.additional_quantity} {prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · {u.commission_status}
-                          {u.commission_status === 'Pending' && (isAdmin || u.staff_id === myId) && (
-                            <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(u)}>Withdraw</span></>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  {(() => {
+                    const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
+                    const current = getCurrentPackage(o, orderUpsells);
+                    const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
+                    return (
+                      <>
+                        {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
+                        <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
+                        {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                        {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                        {current.changed && (
+                          <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
+                            ⬆ Changed from {prodName(current.previousProductId)}{pkgName(current.previousPackageId) ? ` · ${pkgName(current.previousPackageId)}` : ''}
+                            {pending && (isAdmin || pending.staff_id === myId) && (
+                              <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
+                            )}
+                          </div>
+                        )}
+                        {o.created_by && (
+                          <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>
+                            ✎ Submitted by {personName(o.created_by)}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </td>
                 <td>
                   <span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span>
@@ -738,7 +743,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
-                  {isAdmin && <div style={{ color: '#8A93A0', marginTop: '3px' }}>₦{orderTotal(o).toLocaleString()}</div>}
+                  {isAdmin && <div style={{ color: '#8A93A0', marginTop: '3px' }}>₦{orderTotal(o, upsellsByOrder && upsellsByOrder[o.id]).toLocaleString()}</div>}
                   {isAdmin && o.payment_status !== 'Paid' && <div><button className="link-btn" onClick={() => markPaid(o)} style={{ fontSize: '11px' }}>Mark Paid</button></div>}
                   {isAdmin && o.payment_status === 'Paid' && <div><button className="link-btn" onClick={() => resetPaid(o)} style={{ fontSize: '11px' }}>Reset to Unpaid</button></div>}
                 </td>
@@ -782,7 +787,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && <><button className="link-btn" onClick={() => setConfirming(o)}>Confirm</button>{' · '}</>}
                   {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && <><button className="link-btn" onClick={() => setConfirming(o)}>Reconfirm</button>{' · '}</>}
-                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && <><button className="link-btn" onClick={() => setAddingUpsellTo(o)}>Add upsell</button>{' · '}</>}
+                  {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && <><button className="link-btn" onClick={() => setAddingUpsellTo(o)}>Change package</button>{' · '}</>}
                   {isAdmin && <button className="link-btn" onClick={() => setAssigning(o)}>Assign / Send to dispatch</button>}
                   {' · '}
                   {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && <><button className="link-btn" onClick={() => setEditing(o)}>Edit</button>{' · '}</>}
@@ -1067,33 +1072,29 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {prodName(o.product_id)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity || 1}</span>
-                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
-                  {pkgName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(o.package_id)}</div>}
-                  {giftName(o.package_id) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(o.package_id)} × {o.gift_quantity}</div>}
-                  {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
-                  {upsellsByOrder && upsellsByOrder[o.id] && upsellsByOrder[o.id].length > 0 && (
-                    <div style={{ marginTop: '4px' }}>
-                      {upsellsByOrder[o.id].map(u => (
-                        <div key={u.id} style={{ fontSize: '10.5px', background: '#EAF4F1', color: '#1F4D44', borderRadius: '10px', padding: '2px 8px', display: 'inline-block', marginRight: '4px', marginBottom: '2px' }}>
-                          ⬆ +{u.additional_quantity} {prodName(u.upsell_product_id)}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  {(() => {
+                    const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
+                    const current = getCurrentPackage(o, orderUpsells);
+                    return (
+                      <>
+                        {prodName(current.productId)} <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>
+                        <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
+                        {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                        {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                        {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
+                        {current.changed && (
+                          <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
+                            ⬆ Customer changed package — deliver this, not the original
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </td>
                 <td style={{ fontWeight: 600 }}>
                   {(() => {
-                    const activeUpsells = ((upsellsByOrder && upsellsByOrder[o.id]) || []).filter(u => !['Rejected', 'Reversed'].includes(u.commission_status));
-                    const originalAmount = (o.quantity || 1) * Number(o.unit_price || 0);
-                    const upsellAmount = activeUpsells.reduce((sum, u) => sum + Number(u.upsell_amount || 0), 0);
-                    return (
-                      <>
-                        <div>Original: ₦{originalAmount.toLocaleString()}</div>
-                        {activeUpsells.length > 0 && <div style={{ color: '#2E6E62' }}>Upsell: ₦{upsellAmount.toLocaleString()}</div>}
-                        {activeUpsells.length > 0 && <div style={{ fontSize: '11px', color: '#8A93A0', fontWeight: 400, marginTop: '2px' }}>Total to collect: ₦{(originalAmount + upsellAmount).toLocaleString()}</div>}
-                      </>
-                    );
+                    const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+                    return <div>₦{current.amount.toLocaleString()}</div>;
                   })()}
                 </td>
                 <td>{o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>{o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}</td>
