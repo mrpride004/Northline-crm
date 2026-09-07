@@ -1771,14 +1771,17 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
           <>
             <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 6px' }}>Agent stock, by state</h3>
             <p style={{ fontSize: '12px', color: '#8A93A0', marginBottom: '14px' }}>What every dispatch partner is currently holding, grouped by state — useful when a state has more than one agent.</p>
-            {Object.entries(byState).map(([state, agents]) => (
-              <div key={state} style={{ marginBottom: '20px' }}>
+            {Object.entries(byState).map(([state, agents], stateIdx) => {
+              const stateColors = ['#4A7FBF', '#4A9B6E', '#C6862F', '#8A5EBF', '#BF5E6E', '#5EA3BF'];
+              const accent = stateColors[stateIdx % stateColors.length];
+              return (
+              <div key={state} style={{ marginBottom: '20px', borderLeft: `4px solid ${accent}`, paddingLeft: '12px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>{state}{agents.length > 1 ? ` (${agents.length} agents)` : ''}</div>
                 <table>
                   <thead><tr><th>Agent</th>{products.map(p => <th key={p.id}>{p.name}</th>)}</tr></thead>
                   <tbody>
-                    {agents.map(a => (
-                      <tr key={a.id}>
+                    {agents.map((a, agentIdx) => (
+                      <tr key={a.id} style={{ background: agentIdx % 2 === 1 ? '#FAF8F4' : undefined }}>
                         <td>{a.full_name}</td>
                         {products.map(p => {
                           const row = agentStock.find(s => s.agent_id === a.id && s.product_id === p.id);
@@ -1792,7 +1795,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
                   </tbody>
                 </table>
               </div>
-            ))}
+            );})}
           </>
         );
       })()}
@@ -2377,15 +2380,16 @@ export function AddUpsellModal({ order, products, packages, productSets, current
     });
     setSaving(false);
     if (rpcError) { setError(rpcError.message); return; }
+    const upsellId = data;
     const notifyIds = [];
     if (order.dispatch_id) notifyIds.push(order.dispatch_id);
     (profiles || []).filter(p => p.role === 'admin' && p.id !== profile?.id).forEach(p => notifyIds.push(p.id));
     if (notifyIds.length > 0) {
-      sendPushNotification(session, {
-        userIds: notifyIds, title: 'Order package changed',
-        body: `${order.customer} — deliver the updated package, not the original`,
-        url: '/dashboard',
-      });
+      const body = `${order.customer} — deliver the updated package, not the original`;
+      await supabase.from('messages').insert(
+        notifyIds.map(uid => ({ sender_id: profile?.id, sender_name: profile?.full_name, recipient_id: uid, body, related_upsell_id: upsellId }))
+      );
+      sendPushNotification(session, { userIds: notifyIds, title: 'Order package changed', body, url: '/dashboard' });
     }
     onCreated();
   }
@@ -2752,9 +2756,10 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
 
 // ---------- Phase 2: rule testing tool, upsells oversight, suspicious activity ----------
 
-export function UpsellsPage({ products, packages, profiles }) {
+export function UpsellsPage({ products, packages, productSets, profiles }) {
   const [upsells, setUpsells] = useState([]);
   const [ordersById, setOrdersById] = useState({});
+  const [notificationsByUpsell, setNotificationsByUpsell] = useState({});
   const [loading, setLoading] = useState(true);
   const [cancelReason, setCancelReason] = useState({});
   const [holdReason, setHoldReason] = useState({});
@@ -2771,9 +2776,22 @@ export function UpsellsPage({ products, packages, profiles }) {
       (orderRows || []).forEach(o => { map[o.id] = o; });
       setOrdersById(map);
     }
+    const upsellIds = (data || []).map(u => u.id);
+    if (upsellIds.length > 0) {
+      const { data: msgs } = await supabase.from('messages').select('*').in('related_upsell_id', upsellIds);
+      const notifMap = {};
+      (msgs || []).forEach(m => {
+        if (!notifMap[m.related_upsell_id]) notifMap[m.related_upsell_id] = [];
+        notifMap[m.related_upsell_id].push(m);
+      });
+      setNotificationsByUpsell(notifMap);
+    }
     setLoading(false);
   }
   const prodName = id => id ? (products.find(p => p.id === id) || {}).name || '—' : '—';
+  const setNm = id => id ? ((productSets || []).find(s => s.id === id) || {}).name || '—' : '—';
+  const itemLabel = u => u.upsell_set_id ? `📦 ${setNm(u.upsell_set_id)}` : prodName(u.upsell_product_id);
+  const originalLabel = u => prodName(u.original_product_id);
   const staffName = id => (profiles.find(p => p.id === id) || {}).full_name || '—';
 
   async function cancel(u) {
@@ -2821,7 +2839,7 @@ export function UpsellsPage({ products, packages, profiles }) {
                     {ord && <div style={{ fontSize: '12px' }}>{ord.customer}<div style={{ color: '#8A93A0' }}>{ord.phone}{ord.address ? ` · ${ord.address}` : ''}</div></div>}
                   </td>
                   <td>{staffName(u.staff_id)}</td>
-                  <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
+                  <td style={{ fontSize: '12.5px' }}>{originalLabel(u)} → {itemLabel(u)}</td>
                   <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
                   <td>₦{Number(u.commission_amount).toLocaleString()}</td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -2843,11 +2861,12 @@ export function UpsellsPage({ products, packages, profiles }) {
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>All upsells</h3>
       <table>
-        <thead><tr><th>Order details</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Order details</th><th>Staff</th><th>Original → Upsell</th><th>Qty / Amount</th><th>Commission</th><th>When</th><th>Notified</th><th>Status</th><th></th></tr></thead>
         <tbody>
-          {upsells.length === 0 && <tr><td colSpan="7" className="empty">No upsells created yet.</td></tr>}
+          {upsells.length === 0 && <tr><td colSpan="9" className="empty">No upsells created yet.</td></tr>}
           {upsells.map(u => {
             const ord = ordersById[u.original_order_id];
+            const notifs = notificationsByUpsell[u.id] || [];
             return (
             <tr key={u.id}>
               <td>
@@ -2855,9 +2874,26 @@ export function UpsellsPage({ products, packages, profiles }) {
                 {ord && <div style={{ fontSize: '12px' }}>{ord.customer}<div style={{ color: '#8A93A0' }}>{ord.phone}{ord.address ? ` · ${ord.address}` : ''}</div></div>}
               </td>
               <td>{staffName(u.staff_id)}</td>
-              <td style={{ fontSize: '12.5px' }}>{prodName(u.original_product_id)} → {prodName(u.upsell_product_id)}</td>
+              <td style={{ fontSize: '12.5px' }}>{originalLabel(u)} → {itemLabel(u)}</td>
               <td>+{u.additional_quantity} · ₦{Number(u.upsell_amount).toLocaleString()}</td>
               <td>₦{Number(u.commission_amount).toLocaleString()}</td>
+              <td style={{ fontSize: '11.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>{new Date(u.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+              <td style={{ fontSize: '11px' }}>
+                {notifs.length === 0 ? (
+                  <span style={{ color: '#8A93A0' }}>No one to notify</span>
+                ) : (
+                  notifs.map(m => (
+                    <div key={m.id} style={{ marginBottom: '3px' }}>
+                      {staffName(m.recipient_id)} —{' '}
+                      {m.read_at ? (
+                        <span style={{ color: '#2E6E62' }}>Read {new Date(m.read_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                      ) : (
+                        <span style={{ color: '#B0483F', fontWeight: 600 }}>Not read yet</span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </td>
               <td><span className={'pill ' + (u.commission_status === 'Paid' || u.commission_status === 'Approved' ? 'Delivered' : u.commission_status === 'Eligible' ? 'Preparing' : u.commission_status === 'Rejected' || u.commission_status === 'Reversed' ? 'Cancelled' : 'New')}>{u.commission_status}</span></td>
               <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                 {!['Rejected', 'Reversed', 'Approved', 'Paid'].includes(u.commission_status) && (
@@ -3056,7 +3092,7 @@ export function SuspiciousActivityPage({ profiles, orders }) {
 }
 
 // ---------- Unified Commission hub: overview, upsell rules, upsells, corrections ----------
-export function CommissionHub({ profiles, orders, products, packages, session, profile }) {
+export function CommissionHub({ profiles, orders, products, packages, productSets, session, profile }) {
   const [tab, setTab] = useState('overview');
   const TABS = [
     { key: 'overview', label: 'Overview' },
@@ -3074,7 +3110,7 @@ export function CommissionHub({ profiles, orders, products, packages, session, p
       </div>
       {tab === 'overview' && <AdminCommissionPage profiles={profiles} orders={orders} products={products} session={session} />}
       {tab === 'upsellrules' && <UpsellRulesPage products={products} packages={packages} profiles={profiles} />}
-      {tab === 'upsells' && <UpsellsPage products={products} packages={packages} profiles={profiles} />}
+      {tab === 'upsells' && <UpsellsPage products={products} packages={packages} productSets={productSets} profiles={profiles} />}
       {tab === 'corrections' && <CorrectionsPage profile={profile} session={session} refresh={() => {}} />}
       {tab === 'suspicious' && <SuspiciousActivityPage profiles={profiles} orders={orders} />}
     </div>
