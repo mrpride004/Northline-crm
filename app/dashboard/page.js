@@ -1022,7 +1022,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                         ) : (
                           <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>
                         )}
-                        <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
+                        <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()}</div>
                         {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                         {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                         {current.changed && (
@@ -1236,7 +1236,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
-      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {confirmDeleteOrder && (
         <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1433,6 +1433,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
       await deductStockForDelivery(o);
     }
     if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
+    if (status === 'Cancelled' && fee !== undefined && fee !== '') patch.delivery_fee = fee;
     await supabase.from('orders').update(patch).eq('id', o.id);
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
     if (status === 'Delivered' && paidNow) {
@@ -1480,6 +1481,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
         <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Confirmed').length}</div><div className="stat-label">New orders</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
+        <div className="stat"><div className="stat-num">{orders.length > 0 ? Math.round((orders.filter(o => o.status === 'Delivered').length / orders.length) * 100) : 100}%</div><div className="stat-label">Success rate</div></div>
       </div>
       <div className="product-tabs">
         <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All</span>
@@ -1505,14 +1507,14 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                 <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
                 <td>
                   {current.setId ? <>📦 {setName(current.setId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</> : <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>}
-                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
+                  <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()}</div>
                   {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                   {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
                   {current.changed && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⬆ Package changed — deliver this</div>}
                 </td>
                 <td style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</td>
-                <td><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></td>
+                <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
                 <td>
                   {o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>
                   <div style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '2px' }}>{o.address || '—'}</div>
@@ -1589,7 +1591,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">To collect</span><span className="mobile-card-value" style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</span></div>
-                <div className="mobile-card-row"><span className="mobile-card-label">Delivery fee</span><span className="mobile-card-value"><DeliveryFeeCell order={o} onSave={(fee) => setDeliveryFee(o, fee)} /></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Delivery fee</span><span className="mobile-card-value">₦{Number(o.delivery_fee || 0).toLocaleString()}</span></div>
                 {(o.reschedule_date || o.preferred_time) && (
                   <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
                 )}
@@ -1615,7 +1617,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
       )}
       {statusChanging && (
         <StatusRemarkModal
-          order={statusChanging.order} newStatus={statusChanging.newStatus} hidePaidCheckbox
+          order={statusChanging.order} newStatus={statusChanging.newStatus} hidePaidCheckbox canEditFee
           onClose={() => setStatusChanging(null)}
           onConfirm={({ remark, fee, rescheduleDate }) => applyStatusChange(statusChanging.order, statusChanging.newStatus, { remark, fee, rescheduleDate })}
         />

@@ -235,7 +235,7 @@ export function buildOrderSummary(order, products, packages, upsells) {
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     '',
-    `${product ? product.name : '—'}${current.quantity > 1 ? ` × ${current.quantity}` : ''} — ₦${current.unitPrice.toLocaleString()} each = ₦${current.amount.toLocaleString()}`,
+    `${product ? product.name : '—'}${current.quantity > 1 ? ` × ${current.quantity}` : ''} — ₦${current.unitPrice.toLocaleString()} = ₦${current.amount.toLocaleString()}`,
     pkg ? `Package: ${pkg.name}` : null,
     gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
   ];
@@ -459,33 +459,35 @@ export function MyStockPage({ profile, agentStock, products }) {
 
 // ---------- Confirm order (priority + preferred time + remark, before dispatch) ----------
 // ---------- Status change with optional remark (and delivery fee if delivering) ----------
-export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, onClose, onConfirm }) {
+export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditFee, onClose, onConfirm }) {
   const [remark, setRemark] = useState('');
   const [fee, setFee] = useState(order.delivery_fee || '');
   const [rescheduleDate, setRescheduleDate] = useState(order.reschedule_date || '');
   const [paidNow, setPaidNow] = useState(false);
   const isDelivering = newStatus === 'Delivered';
+  const isCancelling = newStatus === 'Cancelled';
   const isRescheduling = newStatus === 'Rescheduled';
+  const showFeeField = canEditFee && (isDelivering || isCancelling);
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Mark as {newStatus}</h3>
-        {isDelivering && (
+        {showFeeField && (
           <>
             <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
             <input type="number" min="0" value={fee} onChange={e => setFee(e.target.value)} placeholder="e.g. 1500" autoFocus />
-            {!hidePaidCheckbox && (
-              <>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
-                  <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
-                  Has payment been remitted? (mark it Paid too)
-                </label>
-                <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
-                  Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
-                </p>
-              </>
-            )}
+          </>
+        )}
+        {isDelivering && !hidePaidCheckbox && (
+          <>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: '13.5px', fontWeight: 'normal' }}>
+              <input type="checkbox" checked={paidNow} onChange={e => setPaidNow(e.target.checked)} />
+              Has payment been remitted? (mark it Paid too)
+            </label>
+            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '6px' }}>
+              Leave unticked if payment hasn't come in yet — you (or admin) can mark it Paid separately later.
+            </p>
           </>
         )}
         {isRescheduling && (
@@ -494,8 +496,8 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, onClose,
             <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} autoFocus />
           </>
         )}
-        <label style={{ marginTop: (isDelivering || isRescheduling) ? '14px' : 0 }}>Remark (optional)</label>
-        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!isDelivering && !isRescheduling} />
+        <label style={{ marginTop: (showFeeField || isRescheduling) ? '14px' : 0 }}>Remark (optional)</label>
+        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!showFeeField && !isRescheduling} />
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate, paidNow })}>Confirm</button>
@@ -866,7 +868,9 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
   }, [person.id]);
 
   const deliveredPaid = delivered.filter(o => o.payment_status === 'Paid');
-  const successRate = delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100;
+  const successRate = isDispatch
+    ? (handled.length > 0 ? (delivered.length / handled.length) * 100 : 100)
+    : (delivered.length > 0 ? (deliveredPaid.length / delivered.length) * 100 : 100);
 
   function buildSummaryText() {
     const lines = [
@@ -2151,7 +2155,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
 // ---------- Phase 1 fraud-proof upsell system ----------
 
-export function AddUpsellModal({ order, products, packages, productSets, profile, onClose, onCreated }) {
+export function AddUpsellModal({ order, products, packages, productSets, currentUpsells, profile, onClose, onCreated }) {
   const [targetType, setTargetType] = useState('product');
   const [upsellProductId, setUpsellProductId] = useState('');
   const [upsellPackageId, setUpsellPackageId] = useState('');
@@ -2160,6 +2164,12 @@ export function AddUpsellModal({ order, products, packages, productSets, profile
   const [unitPrice, setUnitPrice] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const currentPackage = getCurrentPackage(order, currentUpsells);
+  const currentAmount = currentPackage.amount;
+  const newAmount = (parseFloat(additionalQuantity) || 0) * (parseFloat(unitPrice) || 0);
+  const isPriceEntered = unitPrice !== '' && additionalQuantity !== '';
+  const isUpgrade = isPriceEntered && newAmount > currentAmount;
 
   const originalProduct = products.find(p => p.id === order.product_id);
   const originalPackage = (packages || []).find(p => p.id === order.package_id);
@@ -2205,7 +2215,7 @@ export function AddUpsellModal({ order, products, packages, productSets, profile
         <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px' }}>
           <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px', fontWeight: 600 }}>ORIGINALLY ORDERED (locked, kept for history)</div>
           <div style={{ fontSize: '13.5px' }}>{originalSet ? `📦 ${originalSet.name}` : originalProduct ? originalProduct.name : '—'}{originalPackage ? ` · ${originalPackage.name}` : ''}</div>
-          <div style={{ fontSize: '12px', color: '#8A93A0' }}>Quantity: {order.quantity || 1} · ₦{Number(order.unit_price || 0).toLocaleString()} each</div>
+          <div style={{ fontSize: '12px', color: '#8A93A0' }}>Quantity: {order.quantity || 1} · ₦{Number(order.unit_price || 0).toLocaleString()}</div>
         </div>
         <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '-6px', marginBottom: '14px' }}>
           Use this when the customer has decided to go with a different package instead — not on top of the original.
@@ -2252,6 +2262,17 @@ export function AddUpsellModal({ order, products, packages, productSets, profile
           <div><label>Quantity to deliver</label><input type="number" min="1" value={additionalQuantity} onChange={e => setAdditionalQuantity(e.target.value)} /></div>
           <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
         </div>
+        {isPriceEntered && (
+          isUpgrade ? (
+            <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
+              ✓ This is a real upgrade (₦{currentAmount.toLocaleString()} → ₦{newAmount.toLocaleString()}) — commission will apply if a rule matches.
+            </p>
+          ) : (
+            <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '10px' }}>
+              ⚠ Not an upgrade — the new total (₦{newAmount.toLocaleString()}) isn't higher than what they currently have (₦{currentAmount.toLocaleString()}). The change will still go through, but it won't earn commission.
+            </p>
+          )
+        )}
         <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '10px' }}>
           Commission is calculated automatically from the admin's rules once this order is delivered and paid — you won't set an amount here.
         </p>
