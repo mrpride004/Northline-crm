@@ -2363,19 +2363,25 @@ export function AddUpsellModal({ order, products, packages, productSets, current
           <div><label>Unit price (₦)</label><input type="number" min="0" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
         </div>
         {isPriceEntered && (
-          isUpgrade ? (
-            <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
-              ✓ This is a real upgrade (₦{currentAmount.toLocaleString()} → ₦{newAmount.toLocaleString()}) — commission will apply if a rule matches.
-            </p>
-          ) : (
-            <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '10px' }}>
-              ⚠ Not an upgrade — the new total (₦{newAmount.toLocaleString()}) isn't higher than what they currently have (₦{currentAmount.toLocaleString()}). The change will still go through, but it won't earn commission.
-            </p>
-          )
+          <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '12px', fontSize: '13px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <span style={{ color: '#8A93A0' }}>Current package</span>
+              <span>₦{currentAmount.toLocaleString()}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <span style={{ color: '#8A93A0' }}>New package</span>
+              <span>₦{newAmount.toLocaleString()}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontWeight: 600 }}>
+              <span>Difference</span>
+              <span style={{ color: isUpgrade ? '#2E6E62' : '#B0483F' }}>{isUpgrade ? '+' : ''}₦{(newAmount - currentAmount).toLocaleString()}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: '#8A93A0' }}>Status</span>
+              <span>{isUpgrade ? '🟢 Valid upgrade' : '🟡 Not an upgrade — no commission'}</span>
+            </div>
+          </div>
         )}
-        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '10px' }}>
-          Commission is calculated automatically from the admin's rules once this order is delivered and paid — you won't set an amount here.
-        </p>
         {error && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '8px' }}>{error}</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
@@ -2543,7 +2549,10 @@ export function UpsellRulesPage({ products, packages, profiles }) {
                 <td>{fmt(r.commission_type, r.commission_value)}</td>
                 <td><span className={'pill ' + (r.active ? 'Delivered' : 'Cancelled')}>{r.active ? 'On' : 'Off'}</span></td>
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{r.effective_start}{r.effective_end ? ` – ${r.effective_end}` : ''}</td>
-                <td style={{ textAlign: 'right' }}><button className="link-btn" onClick={() => setEditing(r)}>Edit</button></td>
+                <td style={{ textAlign: 'right' }}>
+                  <button className="link-btn" onClick={() => setEditing(r)}>Edit</button>{' '}
+                  <button className="tiny-x" onClick={async () => { if (confirm('Delete this upsell rule? Past orders keep their own record of what was applied, so this is safe.')) { await supabase.from('upsell_commission_rules').delete().eq('id', r.id); load(); } }}>Delete</button>
+                </td>
               </tr>
             ))}
           </tbody>

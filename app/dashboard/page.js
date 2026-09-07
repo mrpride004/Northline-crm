@@ -1029,7 +1029,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           <tbody>
             {paginated.map(o => (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
-                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
+                <td><OrderIdCell order={o} /></td>
                 <td>
                   {(() => {
                     const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
@@ -1085,7 +1085,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 </td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
+                    {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && o.status !== 'Delivered') ? (
                       <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                         {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
@@ -1111,7 +1111,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && (
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
@@ -1155,8 +1155,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             return (
               <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status) }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</span>
-                  {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
+                  <OrderIdCell order={o} />
+                  {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && o.status !== 'Delivered') ? (
                     <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                       {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1212,7 +1212,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Cancelled' && (
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
@@ -1366,7 +1366,7 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
           <tbody>
             {orders.map(o => (
               <tr key={o.id}>
-                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
+                <td><OrderIdCell order={o} /></td>
                 <td>{prodName(o.product_id)}</td>
                 <td>{o.customer}</td>
                 <td style={{ textAlign: 'right' }}><button className="btn primary" onClick={() => claim(o)}>Claim</button></td>
@@ -1375,6 +1375,23 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+function OrderIdCell({ order }) {
+  const ref = order.id.slice(0, 8);
+  return (
+    <div>
+      <div className="oid" style={{ fontWeight: 600 }}>{order.serial_number ? '#' + order.serial_number : '—'}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+        <span className="oid" style={{ fontSize: '10.5px', color: '#8A93A0' }}>{ref}</span>
+        <button
+          className="link-btn" style={{ padding: '1px 5px', fontSize: '10px' }}
+          onClick={() => copyToClipboard(order.id, 'Order reference copied')}
+          title="Copy full order reference"
+        >⧉</button>
+      </div>
     </div>
   );
 }
@@ -1414,6 +1431,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   const [statusTab, setStatusTab] = useState('all');
   const [todayOnly, setTodayOnly] = useState(false);
   const [lifetimeStats, setLifetimeStats] = useState(null);
+  const [search, setSearch] = useState('');
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const setName = id => ((productSets || []).find(s => s.id === id) || {}).name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
@@ -1424,8 +1442,17 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   };
   const todayStr = new Date().toDateString();
   const isToday = o => new Date(o.created_at).toDateString() === todayStr || (o.reschedule_date && new Date(o.reschedule_date).toDateString() === todayStr);
-  const byStatus = statusTab === 'all' ? orders : orders.filter(o => o.status === statusTab);
-  const filtered = todayOnly ? byStatus.filter(isToday) : byStatus;
+  // Rescheduled orders stay assigned to you, but shouldn't clutter your active
+  // queue — they'll reappear here automatically once staff/admin reconfirms them.
+  const visibleOrders = orders.filter(o => o.status !== 'Rescheduled');
+  const byStatus = statusTab === 'all' ? visibleOrders : visibleOrders.filter(o => o.status === statusTab);
+  const byToday = todayOnly ? byStatus.filter(isToday) : byStatus;
+  const filtered = search.trim()
+    ? byToday.filter(o => {
+        const q = search.trim().toLowerCase();
+        return (o.serial_number && String(o.serial_number).includes(q)) || o.id.toLowerCase().includes(q) || (o.customer || '').toLowerCase().includes(q) || (o.phone || '').toLowerCase().includes(q);
+      })
+    : byToday;
 
   useEffect(() => {
     (async () => {
@@ -1518,11 +1545,12 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
         <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Confirmed').length}</div><div className="stat-label">New orders</div></div>
         <div className="stat"><div className="stat-num">{lifetimeStats ? lifetimeStats.total_delivered : orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered (all-time)</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
-        <div className="stat"><div className="stat-num">{lifetimeStats && lifetimeStats.total_assigned > 0 ? Math.round((lifetimeStats.total_delivered / lifetimeStats.total_assigned) * 100) : 100}%</div><div className="stat-label">Success rate (all-time)</div></div>
       </div>
-      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-10px', marginBottom: '16px' }}>
-        Detailed order info below is limited to the last 30 days — the stats above still reflect your full history.
-      </p>
+      <input
+        type="text" value={search} onChange={e => setSearch(e.target.value)}
+        placeholder="Search by serial number, order reference, customer name, or phone…"
+        style={{ width: '100%', maxWidth: '420px', padding: '9px 12px', border: '1px solid #DEDAD0', borderRadius: '6px', marginBottom: '16px' }}
+      />
       <div className="product-tabs">
         <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All</span>
         {STATUSES.map(s => {
@@ -1544,7 +1572,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
               const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
               return (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
-                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
+                <td><OrderIdCell order={o} /></td>
                 <td>
                   {current.setId ? <>📦 {setName(current.setId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</> : <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>}
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()}</div>
@@ -1608,7 +1636,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
             return (
               <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status), border: unpaidDelivered ? '2px solid #B0483F' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</span>
+                  <OrderIdCell order={o} />
                   {o.status === 'New' ? (
                     <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
                   ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
