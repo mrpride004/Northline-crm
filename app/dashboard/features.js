@@ -231,7 +231,7 @@ export function buildOrderSummary(order, products, packages, upsells) {
   const gift = pkg && pkg.gift_product_id ? (products || []).find(p => p.id === pkg.gift_product_id) : null;
 
   const lines = [
-    `Order: ${order.id}`,
+    `Order: ${order.serial_number ? '#' + order.serial_number : order.id}`,
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     '',
@@ -509,17 +509,19 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
   const [priority, setPriority] = useState(order.priority || 'Normal');
   const [preferredTime, setPreferredTime] = useState(order.preferred_time || '');
   const [remark, setRemark] = useState('');
+  const [stateValue, setStateValue] = useState(order.state || '');
   const [statePref, setStatePref] = useState(null);
   const [chosenAgent, setChosenAgent] = useState(null);
   const [assignMode, setAssignMode] = useState(null);
   const [loadedPref, setLoadedPref] = useState(false);
 
-  const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && order.state && p.state === order.state);
+  const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && stateValue && p.state === stateValue);
 
   useEffect(() => {
     (async () => {
-      if (!order.state) { setLoadedPref(true); return; }
-      const { data: pref } = await supabase.from('state_dispatch_preference').select('*').eq('state', order.state).maybeSingle();
+      setLoadedPref(false);
+      if (!stateValue) { setChosenAgent(null); setAssignMode(null); setLoadedPref(true); return; }
+      const { data: pref } = await supabase.from('state_dispatch_preference').select('*').eq('state', stateValue).maybeSingle();
       setStatePref(pref);
 
       if (pref && pref.active && pref.assignment_mode === 'round_robin' && matchingDispatch.length > 0) {
@@ -541,13 +543,13 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
       }
       setLoadedPref(true);
     })();
-  }, []);
+  }, [stateValue]);
 
   const willAutoAssign = !order.dispatch_id && !!chosenAgent;
 
   async function confirm() {
     const patch = {
-      status: 'Confirmed', priority, preferred_time: preferredTime.trim(),
+      status: 'Confirmed', priority, preferred_time: preferredTime.trim(), state: stateValue || null,
       confirmed_at: new Date().toISOString(), confirmed_by: profile?.id,
     };
     if (willAutoAssign) patch.dispatch_id = chosenAgent.id;
@@ -562,7 +564,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
     await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
     if (willAutoAssign) {
-      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${order.state}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
+      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${stateValue}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
       sendPushNotification(session, { userIds: [chosenAgent.id], title: 'New delivery assigned', body: order.customer, url: '/dashboard' });
     }
     if (remark.trim()) {
@@ -575,7 +577,13 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Confirm order · {order.customer}</h3>
-        <label style={{ marginTop: 0 }}>Priority</label>
+        <label style={{ marginTop: 0 }}>Delivery state</label>
+        <select value={stateValue} onChange={e => setStateValue(e.target.value)}>
+          <option value="">— Select the customer's state —</option>
+          {NIGERIA_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        {!stateValue && <p style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px' }}>Without a state, this can't auto-assign to dispatch — admin will need to assign manually.</p>}
+        <label>Priority</label>
         <select value={priority} onChange={e => setPriority(e.target.value)}>
           <option value="Normal">Normal</option>
           <option value="High">High priority</option>
@@ -588,12 +596,12 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
           <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>Already assigned to a dispatch partner — confirming will notify them.</p>
         ) : willAutoAssign ? (
           <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
-            ✓ Will automatically send to {chosenAgent.full_name} in {order.state} on confirmation
+            ✓ Will automatically send to {chosenAgent.full_name} in {stateValue} on confirmation
             {assignMode === 'preferred' ? ' (admin-preferred agent)' : assignMode === 'round_robin' ? ' (load-balanced — has the fewest active deliveries right now)' : ''}.
           </p>
-        ) : (
-          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {order.state || "this order's state"} yet — admin will need to assign one manually.</p>
-        )}
+        ) : stateValue ? (
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>No dispatch partner found for {stateValue} yet — admin will need to assign one manually.</p>
+        ) : null}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={confirm}>Confirm order</button>

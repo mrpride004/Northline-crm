@@ -47,7 +47,11 @@ function DashboardInner() {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [page, setPage] = useState('dashboard');
+  const [page, setPageRaw] = useState('dashboard');
+  function setPage(p) {
+    setPageRaw(p);
+    if (typeof window !== 'undefined') window.localStorage.setItem('trailblazer_last_page', p);
+  }
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
   const [profiles, setProfiles] = useState([]);
@@ -135,7 +139,7 @@ function DashboardInner() {
         // Status changes — curated per role so people aren't notified about their own actions
         const statusChanged = o.status !== before.status;
         if (statusChanged && !echo) {
-          const orderNumber = o.id.slice(0, 8);
+          const orderNumber = (o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8));
           if (profile.role === 'staff' && o.staff_id === profile.id) {
             const msg = `${o.customer} · #${orderNumber} — ${o.status}`;
             showOrderAlert(`🔔 ${msg}`);
@@ -218,13 +222,29 @@ function DashboardInner() {
     router.replace('/login');
   }
 
+  const [locked, setLocked] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlockError, setUnlockError] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+
+  async function unlockSession() {
+    if (!session?.user?.email) { setUnlockError('Session expired — please sign in again.'); return; }
+    setUnlocking(true);
+    setUnlockError('');
+    const { error } = await supabase.auth.signInWithPassword({ email: session.user.email, password: unlockPassword });
+    setUnlocking(false);
+    if (error) { setUnlockError('Incorrect password.'); return; }
+    setLocked(false);
+    setUnlockPassword('');
+  }
+
   useEffect(() => {
     if (!profile) return;
     const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;
-    let timer = setTimeout(signOut, INACTIVITY_LIMIT_MS);
+    let timer = setTimeout(() => setLocked(true), INACTIVITY_LIMIT_MS);
     function resetTimer() {
       clearTimeout(timer);
-      timer = setTimeout(signOut, INACTIVITY_LIMIT_MS);
+      timer = setTimeout(() => setLocked(true), INACTIVITY_LIMIT_MS);
     }
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
     events.forEach(e => window.addEventListener(e, resetTimer, { passive: true }));
@@ -236,6 +256,28 @@ function DashboardInner() {
 
   if (loading) return <div className="loading">Loading your workspace…</div>;
   if (!profile) return <div className="loading">Your account has no role assigned yet. Ask your admin to set one in Supabase.</div>;
+
+  if (locked) {
+    return (
+      <div className="overlay" style={{ background: 'rgba(31,77,68,.97)' }}>
+        <div className="modal" style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: '30px', marginBottom: '6px' }}>🔒</div>
+          <h3 style={{ marginTop: 0 }}>Session locked</h3>
+          <p style={{ fontSize: '13px', color: '#8A93A0', marginBottom: '14px' }}>You were away for a while. Enter your password to keep going right where you left off, {profile.full_name?.split(' ')[0]}.</p>
+          <input
+            type="password" autoFocus value={unlockPassword} onChange={e => setUnlockPassword(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && unlockSession()}
+            placeholder="Your password"
+          />
+          {unlockError && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '6px' }}>{unlockError}</p>}
+          <div className="modal-actions" style={{ justifyContent: 'center' }}>
+            <button className="btn primary" onClick={unlockSession} disabled={unlocking}>{unlocking ? 'Unlocking…' : 'Unlock'}</button>
+          </div>
+          <button className="link-btn" style={{ marginTop: '14px' }} onClick={signOut}>Not you? Sign out instead</button>
+        </div>
+      </div>
+    );
+  }
 
   const isAdmin = profile.role === 'admin';
   const isSubmitter = ['manager', 'logistics', 'marketer'].includes(profile.role);
@@ -273,6 +315,16 @@ function DashboardInner() {
     { key: 'dashboard', label: 'Submit orders' },
     { key: 'messages', label: 'Messages' },
   ];
+
+  const hasRestoredPage = useRef(false);
+  useEffect(() => {
+    if (hasRestoredPage.current || typeof window === 'undefined') return;
+    hasRestoredPage.current = true;
+    const saved = window.localStorage.getItem('trailblazer_last_page');
+    if (saved && navItems.some(n => n.key === saved)) {
+      setPageRaw(saved);
+    }
+  }, []);
 
   const finalNavItems = (profile.allowed_sections && profile.allowed_sections.length > 0)
     ? navItems.filter(n => !APP_SECTIONS.some(s => s.key === n.key) || profile.allowed_sections.includes(n.key))
@@ -958,7 +1010,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           <tbody>
             {paginated.map(o => (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
-                <td className="oid">{o.id.slice(0, 8)}</td>
+                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
                 <td>
                   {(() => {
                     const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
@@ -1080,7 +1132,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             return (
               <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status) }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span className="oid">{o.id.slice(0, 8)}</span>
+                  <span className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</span>
                   {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id)) ? (
                     <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
                       {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
@@ -1192,7 +1244,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>Delete order permanently?</h3>
             <p style={{ fontSize: '13px', color: '#4B5566' }}>
-              This permanently deletes the order for <strong>{confirmDeleteOrder.customer}</strong> ({confirmDeleteOrder.id.slice(0, 8)}) and everything tied to it —
+              This permanently deletes the order for <strong>{confirmDeleteOrder.customer}</strong> ({confirmDeleteOrder.serial_number ? '#' + confirmDeleteOrder.serial_number : confirmDeleteOrder.id.slice(0, 8)}) and everything tied to it —
               history, upsells, and commission records. This can't be undone.
             </p>
             <div className="modal-actions">
@@ -1246,7 +1298,7 @@ function ForwardModal({ order, products, companies, onClose, onSent }) {
   async function send() {
     const company = companies.find(c => c.id === companyId);
     if (!company) return;
-    const summary = `Order ${order.id.slice(0, 8)} · ${prodName(order.product_id)} × ${order.quantity || 1}\nCustomer: ${order.customer} (${order.phone})\nAddress: ${order.address || '—'}${order.preferred_time ? `\nPreferred time: ${order.preferred_time}` : ''}${order.priority === 'High' ? '\nPRIORITY: HIGH' : ''}`;
+    const summary = `Order ${order.serial_number ? '#' + order.serial_number : order.id.slice(0, 8)} · ${prodName(order.product_id)} × ${order.quantity || 1}\nCustomer: ${order.customer} (${order.phone})\nAddress: ${order.address || '—'}${order.preferred_time ? `\nPreferred time: ${order.preferred_time}` : ''}${order.priority === 'High' ? '\nPRIORITY: HIGH' : ''}`;
     await forwardToDispatchCompany({ phone: company.phone, channel: company.channel, orderSummary: summary });
     onSent(companyId);
   }
@@ -1287,7 +1339,7 @@ function UnassignedPage({ orders, products, myId, profile, refresh }) {
           <tbody>
             {orders.map(o => (
               <tr key={o.id}>
-                <td className="oid">{o.id.slice(0, 8)}</td>
+                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
                 <td>{prodName(o.product_id)}</td>
                 <td>{o.customer}</td>
                 <td style={{ textAlign: 'right' }}><button className="btn primary" onClick={() => claim(o)}>Claim</button></td>
@@ -1452,7 +1504,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
               const unpaidDelivered = o.status === 'Delivered' && o.payment_status !== 'Paid';
               return (
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
-                <td className="oid">{o.id.slice(0, 8)}</td>
+                <td className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</td>
                 <td>
                   {current.setId ? <>📦 {setName(current.setId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</> : <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>}
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
@@ -1516,7 +1568,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
             return (
               <div key={o.id} className="mobile-card" style={{ backgroundColor: statusRowColor(o.status), border: unpaidDelivered ? '2px solid #B0483F' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span className="oid">{o.id.slice(0, 8)}</span>
+                  <span className="oid">{(o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8))}</span>
                   {o.status === 'New' ? (
                     <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
                   ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
