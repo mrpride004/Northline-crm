@@ -66,6 +66,14 @@ function DashboardInner() {
   const [lastSeen, setLastSeen] = useState({});
   const [notifMsg, setNotifMsg] = useState('');
   const lastLocalActionRef = useRef(0);
+  const hasRestoredPage = useRef(false);
+  useEffect(() => {
+    if (!profile || hasRestoredPage.current || typeof window === 'undefined') return;
+    hasRestoredPage.current = true;
+    const saved = window.localStorage.getItem('trailblazer_last_page');
+    if (saved) setPageRaw(saved);
+  }, [profile]);
+
 
   useEffect(() => {
     (async () => {
@@ -315,16 +323,6 @@ function DashboardInner() {
     { key: 'dashboard', label: 'Submit orders' },
     { key: 'messages', label: 'Messages' },
   ];
-
-  const hasRestoredPage = useRef(false);
-  useEffect(() => {
-    if (hasRestoredPage.current || typeof window === 'undefined') return;
-    hasRestoredPage.current = true;
-    const saved = window.localStorage.getItem('trailblazer_last_page');
-    if (saved && navItems.some(n => n.key === saved)) {
-      setPageRaw(saved);
-    }
-  }, []);
 
   const finalNavItems = (profile.allowed_sections && profile.allowed_sections.length > 0)
     ? navItems.filter(n => !APP_SECTIONS.some(s => s.key === n.key) || profile.allowed_sections.includes(n.key))
