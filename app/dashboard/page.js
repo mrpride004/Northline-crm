@@ -163,11 +163,11 @@ function DashboardInner() {
             playNotificationSound();
             sendPushNotification(session, { userIds: [profile.id], title: 'Order status changed', body: msg, url: '/dashboard' });
           }
-          if (profile.role === 'dispatch' && o.dispatch_id === profile.id && o.status === 'Confirmed') {
-            const msg = `${o.customer} · #${orderNumber} is now Confirmed`;
+          if (profile.role === 'dispatch' && o.dispatch_id === profile.id) {
+            const msg = `${o.customer} · #${orderNumber} is now ${o.status}`;
             showOrderAlert(`🔔 ${msg}`);
             playNotificationSound();
-            sendPushNotification(session, { userIds: [profile.id], title: 'Order confirmed', body: msg, url: '/dashboard' });
+            sendPushNotification(session, { userIds: [profile.id], title: 'Order status changed', body: msg, url: '/dashboard' });
           }
         }
         refreshAll();
@@ -928,7 +928,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id]), 'Order info copied');
+    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id], productSets), 'Order info copied');
     setActionsOpenFor(null);
   }
 
@@ -1258,7 +1258,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
-      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {confirmDeleteOrder && (
         <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1275,7 +1275,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         </div>
       )}
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
-      {historyOrder && <OrderHistoryModal order={historyOrder} products={products} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
+      {historyOrder && <OrderHistoryModal order={historyOrder} products={products} productSets={productSets} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} session={session} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
@@ -1501,7 +1501,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   }
 
   async function copyOrderInfo(o) {
-    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id]), 'Order info copied');
+    await copyToClipboard(buildOrderSummary(o, products, packages, upsellsByOrder && upsellsByOrder[o.id], productSets), 'Order info copied');
   }
 
   return (

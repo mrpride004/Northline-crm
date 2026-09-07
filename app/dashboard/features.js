@@ -224,26 +224,32 @@ export async function copyToClipboard(text, label) {
   return ok;
 }
 
-export function buildOrderSummary(order, products, packages, upsells) {
+export function buildOrderSummary(order, products, packages, upsells, productSets) {
   const current = getCurrentPackage(order, upsells);
-  const product = (products || []).find(p => p.id === current.productId);
+  const product = current.setId ? null : (products || []).find(p => p.id === current.productId);
+  const set = current.setId ? (productSets || []).find(s => s.id === current.setId) : null;
   const pkg = current.packageId ? (packages || []).find(p => p.id === current.packageId) : null;
   const gift = pkg && pkg.gift_product_id ? (products || []).find(p => p.id === pkg.gift_product_id) : null;
+  const itemName = set ? `📦 ${set.name}` : (product ? product.name : '—');
+  const setContents = set ? set.items?.map(i => `${i.quantity_per_set}× ${(products || []).find(p => p.id === i.product_id)?.name || '—'}`).join(' + ') : null;
 
   const lines = [
     `Order: ${order.serial_number ? '#' + order.serial_number : order.id}`,
     `Customer: ${order.customer} (${order.phone || 'no phone'}${order.phone2 ? `, alt: ${order.phone2}` : ''})`,
     `Address: ${order.address || '—'}${order.state ? ', ' + order.state : ''}`,
     '',
-    `${product ? product.name : '—'}${current.quantity > 1 ? ` × ${current.quantity}` : ''} — ₦${current.unitPrice.toLocaleString()} = ₦${current.amount.toLocaleString()}`,
+    `${itemName}${current.quantity > 1 ? ` × ${current.quantity}` : ''} — ₦${current.unitPrice.toLocaleString()} = ₦${current.amount.toLocaleString()}`,
+    setContents ? `Set contains: ${setContents}` : null,
     pkg ? `Package: ${pkg.name}` : null,
     gift ? `Free gift: ${gift.name} × ${order.gift_quantity}` : null,
   ];
 
   if (current.changed) {
-    const prevProduct = (products || []).find(p => p.id === current.previousProductId);
+    const prevSet = current.previousSetId ? (productSets || []).find(s => s.id === current.previousSetId) : null;
+    const prevProduct = current.previousSetId ? null : (products || []).find(p => p.id === current.previousProductId);
     const prevPkg = current.previousPackageId ? (packages || []).find(p => p.id === current.previousPackageId) : null;
-    lines.push(`(Customer moved to this package — originally ordered ${prevProduct ? prevProduct.name : '—'}${prevPkg ? ' · ' + prevPkg.name : ''})`);
+    const prevLabel = prevSet ? `📦 ${prevSet.name}` : (prevProduct ? prevProduct.name : '—');
+    lines.push(`(Customer moved to this package — originally ordered ${prevLabel}${prevPkg ? ' · ' + prevPkg.name : ''})`);
   }
 
   lines.push(
@@ -1735,7 +1741,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
 }
 
 // ---------- Order history / remarks ----------
-export function OrderHistoryModal({ order, products, profile, onClose, onLogged }) {
+export function OrderHistoryModal({ order, products, productSets, profile, onClose, onLogged }) {
   const [events, setEvents] = useState([]);
   const [upsells, setUpsells] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1762,6 +1768,7 @@ export function OrderHistoryModal({ order, products, profile, onClose, onLogged 
     if (onLogged) onLogged();
   }
   const prodName = id => id ? ((products || []).find(p => p.id === id) || {}).name || '—' : '—';
+  const setNm = id => id ? ((productSets || []).find(s => s.id === id) || {}).name || '—' : '—';
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -1772,7 +1779,7 @@ export function OrderHistoryModal({ order, products, profile, onClose, onLogged 
             <div style={{ fontSize: '11px', fontWeight: 600, color: '#8A93A0', marginBottom: '6px' }}>UPSELLS ON THIS ORDER</div>
             {upsells.map(u => (
               <div key={u.id} style={{ fontSize: '12.5px', background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '6px', padding: '8px 10px', marginBottom: '6px' }}>
-                +{u.additional_quantity} {prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · <span style={{ color: '#8A93A0' }}>{u.commission_status}</span>
+                +{u.additional_quantity} {u.upsell_set_id ? `📦 ${setNm(u.upsell_set_id)}` : prodName(u.upsell_product_id)} · ₦{Number(u.upsell_amount).toLocaleString()} · <span style={{ color: '#8A93A0' }}>{u.commission_status}</span>
                 <div style={{ fontSize: '10.5px', color: '#8A93A0' }}>{new Date(u.created_at).toLocaleString()}</div>
               </div>
             ))}
@@ -2241,7 +2248,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
 // ---------- Phase 1 fraud-proof upsell system ----------
 
-export function AddUpsellModal({ order, products, packages, productSets, currentUpsells, profile, onClose, onCreated }) {
+export function AddUpsellModal({ order, products, packages, productSets, currentUpsells, profile, session, onClose, onCreated }) {
   const [targetType, setTargetType] = useState('product');
   const [upsellProductId, setUpsellProductId] = useState('');
   const [upsellPackageId, setUpsellPackageId] = useState('');
@@ -2291,6 +2298,13 @@ export function AddUpsellModal({ order, products, packages, productSets, current
     });
     setSaving(false);
     if (rpcError) { setError(rpcError.message); return; }
+    if (order.dispatch_id) {
+      sendPushNotification(session, {
+        userIds: [order.dispatch_id], title: 'Order package changed',
+        body: `${order.customer} — deliver the updated package, not the original`,
+        url: '/dashboard',
+      });
+    }
     onCreated();
   }
 
