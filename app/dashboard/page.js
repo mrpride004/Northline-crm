@@ -213,8 +213,12 @@ function DashboardInner() {
     setPackages(pkgs || []);
     setProductSets((setRows || []).map(s => ({ ...s, items: (setItemRows || []).filter(i => i.set_id === s.id) })));
     const remarkMap = {};
+    const dispatchIds = new Set((profs || []).filter(p => p.role === 'dispatch').map(p => p.id));
+    const orderStatusById = {};
+    (ord || []).forEach(o => { orderStatusById[o.id] = o.status; });
     (events || []).forEach(e => {
-      if (!remarkMap[e.order_id]) remarkMap[e.order_id] = e; // first hit per order = most recent, since already sorted desc
+      if (orderStatusById[e.order_id] === 'Delivered') return; // remarks clear once delivered
+      if (!remarkMap[e.order_id]) remarkMap[e.order_id] = { ...e, isDispatchRemark: dispatchIds.has(e.actor_id) };
     });
     setLatestRemarks(remarkMap);
     const upsellMap = {};
@@ -1073,7 +1077,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   </div>
                   {latestRemarks && latestRemarks[o.id] && (
                     <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>
-                      💬 {latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
+                      {latestRemarks[o.id].isDispatchRemark ? '🚚 Dispatch Remark: ' : '💬 '}{latestRemarks[o.id].note} <span style={{ color: '#8A93A0' }}>— {latestRemarks[o.id].actor_name || 'System'}</span>
                     </div>
                   )}
                 </td>
@@ -1109,6 +1113,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
+                      )}
+                      {isAdmin && o.forwarded_to && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={async () => { await updateOrder(o.id, { forwarded_to: null }, null, 'Removed external dispatch assignment.'); setActionsOpenFor(null); }}>Remove external dispatch</div>
                       )}
                       {isAdmin && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px', color: '#B0483F', borderTop: '1px solid #F0EEE8', marginTop: '4px' }} onClick={() => { setConfirmDeleteOrder(o); setActionsOpenFor(null); }}>Delete order permanently</div>
@@ -1176,7 +1183,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 )}
                 <div className="mobile-card-row"><span className="mobile-card-label">Created</span><span className="mobile-card-value">{new Date(o.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>
                 {latestRemarks && latestRemarks[o.id] && (
-                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
+                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>{latestRemarks[o.id].isDispatchRemark ? '🚚 Dispatch Remark: ' : '💬 '}{latestRemarks[o.id].note}</div>
                 )}
 
                 <div style={{ marginTop: '10px', position: 'relative' }}>
@@ -1206,6 +1213,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
+                      )}
+                      {isAdmin && o.forwarded_to && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={async () => { await updateOrder(o.id, { forwarded_to: null }, null, 'Removed external dispatch assignment.'); setActionsOpenFor(null); }}>Remove external dispatch</div>
                       )}
                       {isAdmin && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px', color: '#B0483F', borderTop: '1px solid #F0EEE8' }} onClick={() => { setConfirmDeleteOrder(o); setActionsOpenFor(null); }}>Delete order permanently</div>
@@ -1522,7 +1532,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                     <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>{o.reschedule_date ? `📅 ${o.reschedule_date}` : `⏰ ${o.preferred_time}`}</div>
                   )}
                   {latestRemarks && latestRemarks[o.id] && (
-                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
+                    <div style={{ fontSize: '10.5px', color: '#4B5566', marginTop: '4px', maxWidth: '200px', fontStyle: 'italic' }}>{latestRemarks[o.id].isDispatchRemark ? '🚚 Dispatch Remark: ' : '💬 '}{latestRemarks[o.id].note}</div>
                   )}
                 </td>
                 <td>
@@ -1596,7 +1606,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                   <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
                 )}
                 {latestRemarks && latestRemarks[o.id] && (
-                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>💬 {latestRemarks[o.id].note}</div>
+                  <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>{latestRemarks[o.id].isDispatchRemark ? '🚚 Dispatch Remark: ' : '💬 '}{latestRemarks[o.id].note}</div>
                 )}
                 <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
                   {unpaidDelivered && (

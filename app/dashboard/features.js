@@ -333,14 +333,18 @@ export const NIGERIA_STATES = [
 export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   const [agentId, setAgentId] = useState('');
   const [amounts, setAmounts] = useState({});
+  const [thresholdEdits, setThresholdEdits] = useState({});
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [errors, setErrors] = useState({});
   const dispatchList = profiles.filter(p => p.role === 'dispatch');
   const selected = dispatchList.find(d => d.id === agentId);
 
+  function rowFor(pid) {
+    return agentStock.find(a => a.agent_id === agentId && a.product_id === pid) || null;
+  }
   function stockFor(pid) {
-    const row = agentStock.find(a => a.agent_id === agentId && a.product_id === pid);
+    const row = rowFor(pid);
     return row ? row.quantity : 0;
   }
 
@@ -359,6 +363,19 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
       return;
     }
     setAmounts({ ...amounts, [pid]: '' });
+    refresh();
+  }
+
+  async function saveThreshold(pid) {
+    const val = parseInt(thresholdEdits[pid], 10);
+    if (isNaN(val)) return;
+    const existing = rowFor(pid);
+    if (existing) {
+      await supabase.from('agent_stock').update({ low_stock_threshold: val }).eq('id', existing.id);
+    } else {
+      await supabase.from('agent_stock').insert({ agent_id: agentId, product_id: pid, quantity: 0, low_stock_threshold: val });
+    }
+    setThresholdEdits({ ...thresholdEdits, [pid]: '' });
     refresh();
   }
 
@@ -399,13 +416,29 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
       {agentId && (
         <>
           <table style={{ marginBottom: '20px' }}>
-            <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Send more</th></tr></thead>
+            <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Low-stock alert below</th><th>Send more</th></tr></thead>
             <tbody>
-              {products.map(p => (
+              {products.map(p => {
+                const row = rowFor(p.id);
+                const qty = stockFor(p.id);
+                const threshold = row?.low_stock_threshold;
+                const isLow = threshold != null && qty <= threshold;
+                return (
                 <tr key={p.id}>
                   <td>{p.name}</td>
                   <td><span className={'pill ' + (p.stock_quantity > 0 ? 'Delivered' : 'Cancelled')}>{p.stock_quantity} available</span></td>
-                  <td><span className="pill Delivered">{stockFor(p.id)} units</span></td>
+                  <td>
+                    <span style={isLow ? { color: '#B0483F', fontWeight: 700 } : {}}>{qty} units{isLow ? ' — LOW' : ''}</span>
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <input
+                      type="number" min="0" placeholder={threshold != null ? String(threshold) : 'none set'}
+                      value={thresholdEdits[p.id] ?? ''}
+                      onChange={e => setThresholdEdits({ ...thresholdEdits, [p.id]: e.target.value })}
+                      style={{ width: '90px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                    />{' '}
+                    <button className="link-btn" onClick={() => saveThreshold(p.id)}>Save</button>
+                  </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <input
                       type="number" min="1" placeholder="qty"
@@ -417,7 +450,7 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
                     {errors[p.id] && <div style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px', maxWidth: '200px' }}>{errors[p.id]}</div>}
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
 
@@ -1066,7 +1099,11 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
     loadCompanies();
   }
   async function removeCompany(id) {
-    await supabase.from('dispatch_companies').delete().eq('id', id);
+    const { error } = await supabase.from('dispatch_companies').delete().eq('id', id);
+    if (error) {
+      alert('Could not remove this external dispatch company — it has orders forwarded to it in the past, so deleting it would break those records. Try deactivating it instead, or clear it from any order first.');
+      return;
+    }
     loadCompanies();
   }
 
@@ -1203,8 +1240,16 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
       <div className="list-manage" style={{ marginBottom: '18px' }}>
         {companies.map(c => (
           <div key={c.id} className="list-manage-row">
-            <span>{c.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {c.contact_name} · {c.phone} · {c.channel}</span></span>
-            <button className="tiny-x" onClick={() => removeCompany(c.id)}>Remove</button>
+            <span>
+              {c.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {c.contact_name} · {c.phone} · {c.channel}</span>
+              {c.active === false && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Off</span>}
+            </span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="btn" onClick={async () => { await supabase.from('dispatch_companies').update({ active: c.active === false }).eq('id', c.id); loadCompanies(); }}>
+                {c.active === false ? 'Turn on' : 'Turn off'}
+              </button>
+              <button className="tiny-x" onClick={() => removeCompany(c.id)}>Remove</button>
+            </div>
           </div>
         ))}
         {companies.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No external dispatch companies added yet.</div>}
@@ -1614,7 +1659,10 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
                         <td>{a.full_name}</td>
                         {products.map(p => {
                           const row = agentStock.find(s => s.agent_id === a.id && s.product_id === p.id);
-                          return <td key={p.id}>{row ? row.quantity : 0}</td>;
+                          const qty = row ? row.quantity : 0;
+                          const threshold = row?.low_stock_threshold;
+                          const isLow = threshold != null && qty <= threshold;
+                          return <td key={p.id} style={isLow ? { color: '#B0483F', fontWeight: 700 } : {}}>{qty}{isLow ? ' — LOW' : ''}</td>;
                         })}
                       </tr>
                     ))}
