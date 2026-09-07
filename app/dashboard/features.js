@@ -89,11 +89,11 @@ export async function sendPushNotification(session, { userIds, title, body, url 
 // PERSISTENT row per recipient (readable/recoverable later, tracked read/unread),
 // in addition to the best-effort push. Use this instead of sendPushNotification
 // directly for anything the recipient genuinely must not miss.
-export async function notifyUsers(session, { userIds, type, title, body, orderId }) {
+export async function notifyUsers(session, { userIds, type, title, body, orderId, upsellId }) {
   if (!userIds || userIds.length === 0) return;
   try {
     await supabase.from('notifications').insert(
-      userIds.map(uid => ({ recipient_id: uid, type: type || 'general', title, body, order_id: orderId || null }))
+      userIds.map(uid => ({ recipient_id: uid, type: type || 'general', title, body, order_id: orderId || null, related_upsell_id: upsellId || null }))
     );
   } catch (e) { /* if this fails we still try push below, better than nothing */ }
   sendPushNotification(session, { userIds, title, body, url: '/dashboard' });
@@ -2455,11 +2455,11 @@ export function AddUpsellModal({ order, products, packages, productSets, current
     if (order.dispatch_id) notifyIds.push(order.dispatch_id);
     (profiles || []).filter(p => p.role === 'admin' && p.id !== profile?.id).forEach(p => notifyIds.push(p.id));
     if (notifyIds.length > 0) {
-      const body = `${order.customer} — deliver the updated package, not the original`;
-      await supabase.from('messages').insert(
-        notifyIds.map(uid => ({ sender_id: profile?.id, sender_name: profile?.full_name, recipient_id: uid, body, related_upsell_id: upsellId }))
-      );
-      sendPushNotification(session, { userIds: notifyIds, title: 'Order package changed', body, url: '/dashboard' });
+      notifyUsers(session, {
+        userIds: notifyIds, type: 'package_changed', title: 'Order package changed',
+        body: `${order.customer} — deliver the updated package, not the original`,
+        orderId: order.id, upsellId,
+      });
     }
     onCreated();
   }
@@ -2856,7 +2856,7 @@ export function UpsellsPage({ products, packages, productSets, profiles }) {
     }
     const upsellIds = (data || []).map(u => u.id);
     if (upsellIds.length > 0) {
-      const { data: msgs } = await supabase.from('messages').select('*').in('related_upsell_id', upsellIds);
+      const { data: msgs } = await supabase.from('notifications').select('*').in('related_upsell_id', upsellIds);
       const notifMap = {};
       (msgs || []).forEach(m => {
         if (!notifMap[m.related_upsell_id]) notifMap[m.related_upsell_id] = [];
