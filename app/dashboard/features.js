@@ -995,7 +995,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
         supabase.from('commission_claims').select('*').eq('staff_id', person.id),
       ]);
       const earned = (led || []).reduce((sum, l) => sum + Number(l.amount), 0);
-      const claimed = (cl || []).reduce((sum, c) => sum + Number(c.amount), 0);
+      const claimed = (cl || []).filter(c => c.status === 'Approved').reduce((sum, c) => sum + Number(c.amount), 0);
       setCommissionSummary({ earned, claimed, balance: earned - claimed });
     })();
   }, [person.id]);
@@ -2052,7 +2052,7 @@ export function CommissionPage({ profile, orders, products, session }) {
   const isClaimDay = new Date().getDay() === claimDay;
 
   const earned = ledger.filter(l => !l.reversed).reduce((sum, l) => sum + Number(l.amount), 0);
-  const claimed = claims.reduce((sum, c) => sum + Number(c.amount), 0);
+  const claimed = claims.filter(c => c.status === 'Approved').reduce((sum, c) => sum + Number(c.amount), 0);
   const balance = earned - claimed;
 
   const cycleStart = getCycleStart(new Date());
@@ -2068,12 +2068,14 @@ export function CommissionPage({ profile, orders, products, session }) {
     byProduct[l.product_id].count += 1;
   });
 
+  const pendingClaim = claims.find(c => c.status === 'Pending');
+
   async function claim() {
-    if (!isClaimDay || !eligible || balance <= 0) return;
+    if (!isClaimDay || !eligible || balance <= 0 || pendingClaim) return;
     setClaiming(true);
-    await supabase.from('commission_claims').insert({ staff_id: profile.id, amount: balance });
+    await supabase.from('commission_claims').insert({ staff_id: profile.id, amount: balance, status: 'Pending' });
     setClaiming(false);
-    setMsg(`🎉 Claimed ₦${balance.toLocaleString()}! Nice work this cycle.`);
+    setMsg(`✓ Claim requested for ₦${balance.toLocaleString()} — admin will review and approve once you've been paid.`);
     load();
   }
 
@@ -2091,7 +2093,9 @@ export function CommissionPage({ profile, orders, products, session }) {
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginTop: '6px' }}>₦{thisWeekTotal.toLocaleString()} earned this week so far</div>
         {freeTotal > 0 && <div style={{ fontSize: '11.5px', opacity: 0.75, marginTop: '2px' }}>Includes ₦{freeTotal.toLocaleString()} in per-order bonus commission</div>}
         <div style={{ marginTop: '18px' }}>
-          {balance <= 0 ? (
+          {pendingClaim ? (
+            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>⏳ ₦{Number(pendingClaim.amount).toLocaleString()} claim requested — waiting on admin approval</span>
+          ) : balance <= 0 ? (
             <span style={{ fontSize: '12.5px', opacity: 0.75 }}>Deliver more Paid orders to start earning towards your next claim.</span>
           ) : !eligible ? (
             <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>Keep your delivery success rate up to unlock claiming</span>
@@ -2225,6 +2229,25 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
     setClaimsAll(cl || []);
   }
 
+  async function approveClaim(c) {
+    const { error } = await supabase.rpc('approve_commission_claim', { p_claim_id: c.id });
+    if (error) { alert('Unable to approve this claim right now.'); return; }
+    notifyUsers(session, {
+      userIds: [c.staff_id], type: 'commission_claim_approved', title: 'Commission claim approved',
+      body: `Your ₦${Number(c.amount).toLocaleString()} claim has been approved.`,
+    });
+    load();
+  }
+  async function rejectClaim(c) {
+    const { error } = await supabase.rpc('reject_commission_claim', { p_claim_id: c.id });
+    if (error) { alert('Unable to reject this claim right now.'); return; }
+    notifyUsers(session, {
+      userIds: [c.staff_id], type: 'commission_claim_rejected', title: 'Commission claim rejected',
+      body: `Your ₦${Number(c.amount).toLocaleString()} claim was not approved — check with admin.`,
+    });
+    load();
+  }
+
   async function toggleStaffWindow(staffId, current) {
     await supabase.from('profiles').update({ success_rate_window_enabled: !current }).eq('id', staffId);
     // Refresh just the affected profile locally by reloading the page's profiles isn't available here —
@@ -2264,6 +2287,27 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">Commission</h1><p className="page-sub">Set the claim eligibility rules and see where every staff member stands.</p></div></div>
+
+      {claimsAll.filter(c => c.status === 'Pending').length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Pending claims — awaiting your approval</h3>
+          <div className="list-manage" style={{ marginBottom: '22px' }}>
+            {claimsAll.filter(c => c.status === 'Pending').map(c => (
+              <div key={c.id} className="list-manage-row">
+                <span>
+                  {(profiles.find(p => p.id === c.staff_id) || {}).full_name || '—'}
+                  <span style={{ color: '#8A93A0', fontSize: '11.5px' }}> · requested {new Date(c.claimed_at).toLocaleDateString()}</span>
+                </span>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 600 }}>₦{Number(c.amount).toLocaleString()}</span>
+                  <button className="btn primary" onClick={() => approveClaim(c)}>Approve — I've paid this</button>
+                  <button className="btn" onClick={() => rejectClaim(c)}>Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
         <label className="field-label" style={{ marginTop: 0 }}>Day of the week claims open</label>
@@ -2335,7 +2379,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
             const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
             const myClaims = claimsAll.filter(c => c.staff_id === s.id);
             const earned = myLedger.reduce((sum, l) => sum + Number(l.amount), 0);
-            const claimed = myClaims.reduce((sum, c) => sum + Number(c.amount), 0);
+            const claimed = myClaims.filter(c => c.status === 'Approved').reduce((sum, c) => sum + Number(c.amount), 0);
             const balance = earned - claimed;
             const rateInfo = computeSuccessRate(orders, s.id, windowDays, s.success_rate_window_enabled);
             const rate = rateInfo.rate;
@@ -2352,7 +2396,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
                   </button>
                 </td>
                 <td><span className={'pill ' + (rate >= threshold ? 'Delivered' : 'Cancelled')}>{rate >= threshold ? 'Eligible' : 'Not yet'}</span></td>
-                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{lastClaim ? new Date(lastClaim.claimed_at).toLocaleDateString() : 'Never'}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{lastClaim ? `${new Date(lastClaim.claimed_at).toLocaleDateString()} (${lastClaim.status})` : 'Never'}</td>
               </tr>
             );
           })}
@@ -2366,7 +2410,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
           const myLedger = ledgerAll.filter(l => l.staff_id === s.id && !l.reversed);
           const myClaims = claimsAll.filter(c => c.staff_id === s.id);
           const earned = myLedger.reduce((sum, l) => sum + Number(l.amount), 0);
-          const claimed = myClaims.reduce((sum, c) => sum + Number(c.amount), 0);
+          const claimed = myClaims.filter(c => c.status === 'Approved').reduce((sum, c) => sum + Number(c.amount), 0);
           const balance = earned - claimed;
           const rateInfo = computeSuccessRate(orders, s.id, windowDays, s.success_rate_window_enabled);
           const rate = rateInfo.rate;
@@ -2388,7 +2432,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
                   </button>
                 </span>
               </div>
-              <div className="mobile-card-row"><span className="mobile-card-label">Last claim</span><span className="mobile-card-value">{lastClaim ? new Date(lastClaim.claimed_at).toLocaleDateString() : 'Never'}</span></div>
+              <div className="mobile-card-row"><span className="mobile-card-label">Last claim</span><span className="mobile-card-value">{lastClaim ? `${new Date(lastClaim.claimed_at).toLocaleDateString()} (${lastClaim.status})` : 'Never'}</span></div>
             </div>
           );
         })}
