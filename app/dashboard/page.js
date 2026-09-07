@@ -327,7 +327,7 @@ function DashboardInner() {
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
 
-        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} profile={profile} refresh={refreshAll} />}
+        {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} profile={profile} refresh={refreshAll} />}
         {profile.role === 'dispatch' && page === 'mystock' && <MyStockPage profile={profile} agentStock={agentStock} products={products} />}
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
@@ -769,22 +769,24 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function adjustStockForOrder(o, direction) {
-    const qtyDelta = direction * (o.quantity || 1);
-    if (o.set_id) {
-      await supabase.rpc('adjust_stock_for_set', { p_set_id: o.set_id, p_delta_units: qtyDelta });
+    const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+    const qtyDelta = direction * (current.quantity || 1);
+    if (current.setId) {
+      await supabase.rpc('adjust_stock_for_set', { p_set_id: current.setId, p_delta_units: qtyDelta });
       if (o.dispatch_id) {
-        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: o.set_id, p_delta_units: qtyDelta });
+        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: current.setId, p_delta_units: qtyDelta });
       }
       return; // sets don't carry a package/gift in this version
     }
-    const product = products.find(p => p.id === o.product_id);
+    const product = products.find(p => p.id === current.productId);
     if (product) {
       await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: qtyDelta });
       if (o.dispatch_id) {
         await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: qtyDelta });
       }
     }
-    if (o.package_id && o.gift_quantity > 0) {
+    // Free gifts only ever apply to the ORIGINAL package, never to an upsell replacement.
+    if (!current.changed && o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
         const giftDelta = direction * o.gift_quantity;
@@ -958,27 +960,24 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {o.set_id ? (
-                    <>
-                      📦 {setName(o.set_id)} {o.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{o.quantity}</span>}
-                      <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{Number(o.unit_price || 0).toLocaleString()} each</div>
-                      {o.created_by && (
-                        <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>
-                      )}
-                    </>
-                  ) : (() => {
+                  {(() => {
                     const orderUpsells = upsellsByOrder && upsellsByOrder[o.id];
                     const current = getCurrentPackage(o, orderUpsells);
                     const pending = (orderUpsells || []).find(u => u.commission_status === 'Pending');
+                    const previousLabel = current.previousSetId ? `📦 ${setName(current.previousSetId)}` : `${prodName(current.previousProductId)}${pkgName(current.previousPackageId) ? ' · ' + pkgName(current.previousPackageId) : ''}`;
                     return (
                       <>
-                        {prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}
+                        {current.setId ? (
+                          <>📦 {setName(current.setId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>
+                        ) : (
+                          <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>
+                        )}
                         <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
-                        {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
-                        {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                        {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                        {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                         {current.changed && (
                           <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
-                            ⬆ Changed from {prodName(current.previousProductId)}{pkgName(current.previousPackageId) ? ` · ${pkgName(current.previousPackageId)}` : ''}
+                            ⬆ Changed from {previousLabel}
                             {pending && (isAdmin || pending.staff_id === myId) && (
                               <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
                             )}
@@ -1089,14 +1088,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   ) : <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
                 </div>
                 <div style={{ fontSize: '14px', fontWeight: 600 }}>
-                  {prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}
+                  {current.setId ? <>📦 {setName(current.setId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</> : <>{prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginLeft: '6px' }}>High</span>}
                 </div>
-                {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
-                {giftName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                 {current.changed && (
                   <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '3px' }}>
-                    ⬆ Changed from {prodName(current.previousProductId)}{pkgName(current.previousPackageId) ? ` · ${pkgName(current.previousPackageId)}` : ''}
+                    ⬆ Changed from {current.previousSetId ? `📦 ${setName(current.previousSetId)}` : `${prodName(current.previousProductId)}${pkgName(current.previousPackageId) ? ' · ' + pkgName(current.previousPackageId) : ''}`}
                     {pending && (isAdmin || pending.staff_id === myId) && (
                       <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
                     )}
@@ -1187,7 +1186,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
-      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} profile={profile} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {confirmDeleteOrder && (
         <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1331,11 +1330,12 @@ function DeliveryFeeCell({ order, onSave }) {
   );
 }
 
-function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrder, profile, refresh }) {
+function DispatchPage({ orders, products, packages, productSets, latestRemarks, upsellsByOrder, profile, refresh }) {
   const [statusChanging, setStatusChanging] = useState(null);
   const [statusTab, setStatusTab] = useState('all');
   const [todayOnly, setTodayOnly] = useState(false);
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+  const setName = id => ((productSets || []).find(s => s.id === id) || {}).name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
   const giftName = pkgId => {
     const pkg = (packages || []).find(p => p.id === pkgId);
@@ -1348,21 +1348,22 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
   const filtered = todayOnly ? byStatus.filter(isToday) : byStatus;
 
   async function deductStockForDelivery(o) {
-    if (o.set_id) {
-      await supabase.rpc('adjust_stock_for_set', { p_set_id: o.set_id, p_delta_units: -(o.quantity || 1) });
+    const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+    if (current.setId) {
+      await supabase.rpc('adjust_stock_for_set', { p_set_id: current.setId, p_delta_units: -(current.quantity || 1) });
       if (o.dispatch_id) {
-        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: o.set_id, p_delta_units: -(o.quantity || 1) });
+        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: current.setId, p_delta_units: -(current.quantity || 1) });
       }
       return;
     }
-    const product = products.find(p => p.id === o.product_id);
+    const product = products.find(p => p.id === current.productId);
     if (product) {
-      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: -(o.quantity || 1) });
+      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: -(current.quantity || 1) });
       if (o.dispatch_id) {
-        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: -(o.quantity || 1) });
+        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: -(current.quantity || 1) });
       }
     }
-    if (o.package_id && o.gift_quantity > 0) {
+    if (!current.changed && o.package_id && o.gift_quantity > 0) {
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
         await supabase.rpc('adjust_stock', { p_product_id: pkg.gift_product_id, p_delta: -o.gift_quantity });
@@ -1453,10 +1454,10 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
               <tr key={o.id} style={{ backgroundColor: statusRowColor(o.status) }}>
                 <td className="oid">{o.id.slice(0, 8)}</td>
                 <td>
-                  {prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}
+                  {current.setId ? <>📦 {setName(current.setId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</> : <>{prodName(current.productId)} {current.quantity > 1 && <span style={{ color: '#8A93A0', fontSize: '11px' }}>×{current.quantity}</span>}</>}
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>₦{current.unitPrice.toLocaleString()} each</div>
-                  {pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
-                  {giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
+                  {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
+                  {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
                   {current.changed && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⬆ Package changed — deliver this</div>}
                 </td>
@@ -1531,8 +1532,8 @@ function DispatchPage({ orders, products, packages, latestRemarks, upsellsByOrde
                     </select>
                   )}
                 </div>
-                <div style={{ fontSize: '14px', fontWeight: 600 }}>{prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</div>
-                {pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
+                <div style={{ fontSize: '14px', fontWeight: 600 }}>{current.setId ? `📦 ${setName(current.setId)}` : prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</div>
+                {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
                 {current.changed && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>⬆ Package changed — deliver this one</div>}
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value">{o.customer}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>

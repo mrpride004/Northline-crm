@@ -269,18 +269,18 @@ export function getCurrentPackage(order, upsells) {
   const active = activeUpsellFor(upsells);
   if (active) {
     return {
-      productId: active.upsell_product_id, packageId: active.upsell_package_id,
+      productId: active.upsell_product_id, packageId: active.upsell_package_id, setId: active.upsell_set_id || null,
       quantity: active.additional_quantity, unitPrice: Number(active.unit_price || 0),
       amount: Number(active.additional_quantity || 1) * Number(active.unit_price || 0),
       changed: true,
-      previousProductId: order.product_id, previousPackageId: order.package_id,
+      previousProductId: order.product_id, previousPackageId: order.package_id, previousSetId: order.set_id || null,
     };
   }
   return {
-    productId: order.product_id, packageId: order.package_id,
+    productId: order.product_id, packageId: order.package_id, setId: order.set_id || null,
     quantity: order.quantity || 1, unitPrice: Number(order.unit_price || 0),
     amount: (order.quantity || 1) * Number(order.unit_price || 0),
-    changed: false, previousProductId: null, previousPackageId: null,
+    changed: false, previousProductId: null, previousPackageId: null, previousSetId: null,
   };
 }
 
@@ -2143,9 +2143,11 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
 // ---------- Phase 1 fraud-proof upsell system ----------
 
-export function AddUpsellModal({ order, products, packages, profile, onClose, onCreated }) {
+export function AddUpsellModal({ order, products, packages, productSets, profile, onClose, onCreated }) {
+  const [targetType, setTargetType] = useState('product');
   const [upsellProductId, setUpsellProductId] = useState('');
   const [upsellPackageId, setUpsellPackageId] = useState('');
+  const [upsellSetId, setUpsellSetId] = useState('');
   const [additionalQuantity, setAdditionalQuantity] = useState(1);
   const [unitPrice, setUnitPrice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2153,6 +2155,7 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
 
   const originalProduct = products.find(p => p.id === order.product_id);
   const originalPackage = (packages || []).find(p => p.id === order.package_id);
+  const originalSet = (productSets || []).find(s => s.id === order.set_id);
   const upsellPackages = (packages || []).filter(p => p.product_id === upsellProductId);
 
   function onPackageChange(id) {
@@ -2161,15 +2164,26 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
     if (pkg && pkg.price != null) setUnitPrice(pkg.price);
   }
 
+  function onSetChange(id) {
+    setUpsellSetId(id);
+    const s = (productSets || []).find(ps => ps.id === id);
+    if (s && s.price_mode === 'flat' && s.flat_price != null) setUnitPrice(s.flat_price);
+  }
+
   async function submit() {
-    if (!upsellProductId || !additionalQuantity || unitPrice === '') { setError('Fill in the upsell product, quantity, and price.'); return; }
+    if (targetType === 'set') {
+      if (!upsellSetId || !additionalQuantity || unitPrice === '') { setError('Choose a set, quantity, and price.'); return; }
+    } else if (!upsellProductId || !additionalQuantity || unitPrice === '') {
+      setError('Fill in the upsell product, quantity, and price.'); return;
+    }
     setSaving(true);
     const { data, error: rpcError } = await supabase.rpc('create_upsell', {
       p_original_order_id: order.id,
-      p_upsell_product_id: upsellProductId,
-      p_upsell_package_id: upsellPackageId || null,
+      p_upsell_product_id: targetType === 'set' ? null : upsellProductId,
+      p_upsell_package_id: targetType === 'set' ? null : (upsellPackageId || null),
       p_additional_quantity: parseInt(additionalQuantity, 10) || 1,
       p_unit_price: parseFloat(unitPrice) || 0,
+      p_upsell_set_id: targetType === 'set' ? upsellSetId : null,
     });
     setSaving(false);
     if (rpcError) { setError(rpcError.message); return; }
@@ -2182,7 +2196,7 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
         <h3>Change package · {order.customer}</h3>
         <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px' }}>
           <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px', fontWeight: 600 }}>ORIGINALLY ORDERED (locked, kept for history)</div>
-          <div style={{ fontSize: '13.5px' }}>{originalProduct ? originalProduct.name : '—'}{originalPackage ? ` · ${originalPackage.name}` : ''}</div>
+          <div style={{ fontSize: '13.5px' }}>{originalSet ? `📦 ${originalSet.name}` : originalProduct ? originalProduct.name : '—'}{originalPackage ? ` · ${originalPackage.name}` : ''}</div>
           <div style={{ fontSize: '12px', color: '#8A93A0' }}>Quantity: {order.quantity || 1} · ₦{Number(order.unit_price || 0).toLocaleString()} each</div>
         </div>
         <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '-6px', marginBottom: '14px' }}>
@@ -2190,6 +2204,26 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
           Dispatch will only deliver what you enter below; the original package above will no longer be sent.
         </p>
 
+        {productSets && productSets.length > 0 && (
+          <div className="row2" style={{ marginBottom: '10px' }}>
+            <button type="button" className={'btn' + (targetType === 'product' ? ' primary' : '')} onClick={() => setTargetType('product')} style={{ flex: 1 }}>Single product</button>
+            <button type="button" className={'btn' + (targetType === 'set' ? ' primary' : '')} onClick={() => setTargetType('set')} style={{ flex: 1 }}>Product set</button>
+          </div>
+        )}
+
+        {targetType === 'set' ? (
+          <>
+            <label style={{ marginTop: 0 }}>New set</label>
+            <select value={upsellSetId} onChange={e => onSetChange(e.target.value)}>
+              <option value="">— Select a set —</option>
+              {productSets.map(s => {
+                const { inStock, text } = setStockLabel(s, products);
+                return <option key={s.id} value={s.id} disabled={!inStock}>{s.name}{text}</option>;
+              })}
+            </select>
+          </>
+        ) : (
+        <>
         <label style={{ marginTop: 0 }}>New product</label>
         <select value={upsellProductId} onChange={e => { setUpsellProductId(e.target.value); setUpsellPackageId(''); setUnitPrice(''); }}>
           <option value="">— Select product —</option>
@@ -2203,6 +2237,8 @@ export function AddUpsellModal({ order, products, packages, profile, onClose, on
               {upsellPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </>
+        )}
+        </>
         )}
         <div className="row2">
           <div><label>Quantity to deliver</label><input type="number" min="1" value={additionalQuantity} onChange={e => setAdditionalQuantity(e.target.value)} /></div>
