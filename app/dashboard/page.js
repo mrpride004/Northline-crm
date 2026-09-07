@@ -1406,6 +1406,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   const [statusChanging, setStatusChanging] = useState(null);
   const [statusTab, setStatusTab] = useState('all');
   const [todayOnly, setTodayOnly] = useState(false);
+  const [lifetimeStats, setLifetimeStats] = useState(null);
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
   const setName = id => ((productSets || []).find(s => s.id === id) || {}).name || '—';
   const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
@@ -1418,6 +1419,13 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   const isToday = o => new Date(o.created_at).toDateString() === todayStr || (o.reschedule_date && new Date(o.reschedule_date).toDateString() === todayStr);
   const byStatus = statusTab === 'all' ? orders : orders.filter(o => o.status === statusTab);
   const filtered = todayOnly ? byStatus.filter(isToday) : byStatus;
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.rpc('my_dispatch_lifetime_stats');
+      if (data && data[0]) setLifetimeStats(data[0]);
+    })();
+  }, []);
 
   async function deductStockForDelivery(o) {
     const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
@@ -1501,10 +1509,13 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
       <div className="topbar"><div><h1 className="page-title">My deliveries</h1><p className="page-sub">Orders assigned to you for dispatch.</p></div></div>
       <div className="stats" style={{ marginBottom: '18px' }}>
         <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Confirmed').length}</div><div className="stat-label">New orders</div></div>
-        <div className="stat"><div className="stat-num">{orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered</div></div>
+        <div className="stat"><div className="stat-num">{lifetimeStats ? lifetimeStats.total_delivered : orders.filter(o => o.status === 'Delivered').length}</div><div className="stat-label">Delivered (all-time)</div></div>
         <div className="stat"><div className="stat-num">{orders.filter(o => !['Delivered', 'Cancelled'].includes(o.status)).length}</div><div className="stat-label">In progress</div></div>
-        <div className="stat"><div className="stat-num">{orders.length > 0 ? Math.round((orders.filter(o => o.status === 'Delivered').length / orders.length) * 100) : 100}%</div><div className="stat-label">Success rate</div></div>
+        <div className="stat"><div className="stat-num">{lifetimeStats && lifetimeStats.total_assigned > 0 ? Math.round((lifetimeStats.total_delivered / lifetimeStats.total_assigned) * 100) : 100}%</div><div className="stat-label">Success rate (all-time)</div></div>
       </div>
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-10px', marginBottom: '16px' }}>
+        Detailed order info below is limited to the last 30 days — the stats above still reflect your full history.
+      </p>
       <div className="product-tabs">
         <span className={'ptab' + (statusTab === 'all' ? ' active' : '')} onClick={() => setStatusTab('all')}>All</span>
         {STATUSES.map(s => {
