@@ -786,13 +786,18 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           return true;
         })
       : filtered;
-    const headers = ['Order ID', 'Product', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Quantity', 'Unit Price', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Last Status Update', 'Delivered At'];
-    const rows = source.map(o => [
-      o.id, prodName(o.product_id), o.customer, o.phone, o.phone2 || '', o.state || '', (o.address || '').replace(/\n/g, ' '),
-      o.quantity || 1, o.unit_price ?? '', o.delivery_fee ?? 0, o.payment_status || '', o.status,
-      o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
-      o.created_by ? personName(o.created_by) : '', o.created_at, o.status_updated_at || '', o.delivered_at || '',
-    ]);
+    const headers = ['Serial #', 'Order ID', 'Item', 'Quantity', 'Unit Price', 'Amount', 'Package Changed?', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Confirmed At', 'Last Status Update', 'Delivered At'];
+    const rows = source.map(o => {
+      const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+      const itemName = current.setId ? `Set: ${(productSets.find(s => s.id === current.setId) || {}).name || '—'}` : prodName(current.productId);
+      return [
+        o.serial_number || '', o.id, itemName, current.quantity, current.unitPrice, current.amount, current.changed ? 'Yes' : 'No',
+        o.customer, o.phone, o.phone2 || '', o.state || '', (o.address || '').replace(/\n/g, ' '),
+        o.delivery_fee ?? 0, o.payment_status || '', o.status,
+        o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
+        o.created_by ? personName(o.created_by) : '', o.created_at, o.confirmed_at || '', o.status_updated_at || '', o.delivered_at || '',
+      ];
+    });
     const csv = [headers, ...rows].map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1096,6 +1101,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 <td style={{ fontSize: '10.5px', color: '#8A93A0', whiteSpace: 'nowrap' }}>
                   {(o.reschedule_date || o.preferred_time) && <div>{o.reschedule_date ? `📅 ${o.reschedule_date}` : `⏰ ${o.preferred_time}`}</div>}
                   <div>Created {new Date(o.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</div>
+                  {o.confirmed_at && <div>Confirmed {new Date(o.confirmed_at).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>}
                   {o.status_updated_at && <div>Updated {new Date(o.status_updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</div>}
                 </td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap', position: 'relative' }}>
@@ -1194,6 +1200,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <div className="mobile-card-row"><span className="mobile-card-label">Scheduled</span><span className="mobile-card-value">{o.reschedule_date || o.preferred_time}</span></div>
                 )}
                 <div className="mobile-card-row"><span className="mobile-card-label">Created</span><span className="mobile-card-value">{new Date(o.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>
+                {o.confirmed_at && <div className="mobile-card-row"><span className="mobile-card-label">Confirmed</span><span className="mobile-card-value">{new Date(o.confirmed_at).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>}
                 {latestRemarks && latestRemarks[o.id] && (
                   <div style={{ fontSize: '11px', color: '#4B5566', marginTop: '6px', fontStyle: 'italic' }}>{latestRemarks[o.id].isDispatchRemark ? '🚚 Dispatch Remark: ' : '💬 '}{latestRemarks[o.id].note}</div>
                 )}
