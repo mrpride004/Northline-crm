@@ -1047,11 +1047,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                         {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                         {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                         {current.changed && (
-                          <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
-                            ⬆ Changed from {previousLabel}
-                            {pending && (isAdmin || pending.staff_id === myId) && (
-                              <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
-                            )}
+                          <div style={{ marginTop: '4px' }}>
+                            <span style={{ display: 'inline-block', background: '#C6862F', color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', letterSpacing: '.03em' }}>PACKAGE CHANGED</span>
+                            <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>
+                              Was: {previousLabel}
+                              {pending && (isAdmin || pending.staff_id === myId) && (
+                                <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
+                              )}
+                            </div>
                           </div>
                         )}
                         {o.created_by && (
@@ -1114,7 +1117,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && profile?.can_upsell !== false)) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setAddingUpsellTo(o); setActionsOpenFor(null); }}>Change package</div>
                       )}
                       {isAdmin && (
@@ -1169,11 +1172,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                 {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                 {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                 {current.changed && (
-                  <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '3px' }}>
-                    ⬆ Changed from {current.previousSetId ? `📦 ${setName(current.previousSetId)}` : `${prodName(current.previousProductId)}${pkgName(current.previousPackageId) ? ' · ' + pkgName(current.previousPackageId) : ''}`}
-                    {pending && (isAdmin || pending.staff_id === myId) && (
-                      <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
-                    )}
+                  <div style={{ marginTop: '4px' }}>
+                    <span style={{ display: 'inline-block', background: '#C6862F', color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', letterSpacing: '.03em' }}>PACKAGE CHANGED</span>
+                    <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '3px' }}>
+                      Was: {current.previousSetId ? `📦 ${setName(current.previousSetId)}` : `${prodName(current.previousProductId)}${pkgName(current.previousPackageId) ? ' · ' + pkgName(current.previousPackageId) : ''}`}
+                      {pending && (isAdmin || pending.staff_id === myId) && (
+                        <> · <span className="link-btn" style={{ fontSize: '10px' }} onClick={() => withdrawUpsell(pending)}>Withdraw</span></>
+                      )}
+                    </div>
                   </div>
                 )}
                 {o.created_by && <div style={{ fontSize: '11px', color: '#2E6E62', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>}
@@ -1215,7 +1221,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
+                      {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && profile?.can_upsell !== false)) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setAddingUpsellTo(o); setActionsOpenFor(null); }}>Change package</div>
                       )}
                       {isAdmin && (
@@ -1265,7 +1271,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
-      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} profiles={profiles} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
       {confirmDeleteOrder && (
         <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1579,7 +1585,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                   {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Package: {pkgName(current.packageId)}</div>}
                   {!current.setId && giftName(current.packageId) && <div style={{ fontSize: '11px', color: '#8A93A0' }}>🎁 {giftName(current.packageId)} × {o.gift_quantity}</div>}
                   {o.priority === 'High' && <span className="pill Cancelled" style={{ marginTop: '4px', display: 'inline-block' }}>High priority</span>}
-                  {current.changed && <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>⬆ Package changed — deliver this</div>}
+                  {current.changed && <span style={{ display: 'inline-block', background: '#C6862F', color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', letterSpacing: '.03em', marginTop: '4px' }}>PACKAGE CHANGED</span>}
                 </td>
                 <td style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</td>
                 <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
@@ -1654,7 +1660,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                 </div>
                 <div style={{ fontSize: '14px', fontWeight: 600 }}>{current.setId ? `📦 ${setName(current.setId)}` : prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</div>
                 {!current.setId && pkgName(current.packageId) && <div style={{ fontSize: '12px', color: '#8A93A0' }}>{pkgName(current.packageId)}</div>}
-                {current.changed && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>⬆ Package changed — deliver this one</div>}
+                {current.changed && <span style={{ display: 'inline-block', background: '#C6862F', color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', letterSpacing: '.03em', marginTop: '4px' }}>PACKAGE CHANGED</span>}
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value">{o.customer}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
@@ -1954,6 +1960,16 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                       ) : (
                         <button className="link-btn" onClick={() => setAsAutoAssign(s)}>Set as auto-assign for {s.state || 'their state'}</button>
                       )
+                    )}
+                    {s.role === 'staff' && (
+                      <>
+                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_upsell: s.can_upsell === false }).eq('id', s.id); refresh(); }}>
+                          {s.can_upsell === false ? 'Upsell: Off' : 'Upsell: On'}
+                        </button>
+                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_auto_assign: s.can_auto_assign === false }).eq('id', s.id); refresh(); }}>
+                          {s.can_auto_assign === false ? 'Auto-assign: Off' : 'Auto-assign: On'}
+                        </button>
+                      </>
                     )}
                     <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
                     <button className="btn" style={{ color: '#B0483F' }} onClick={() => setConfirmDeleteId(s.id)}>Delete</button>

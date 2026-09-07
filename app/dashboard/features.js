@@ -586,7 +586,8 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     })();
   }, [stateValue]);
 
-  const willAutoAssign = !order.dispatch_id && !!chosenAgent;
+  const canAutoAssign = !profile || profile.role === 'admin' || profile.can_auto_assign !== false;
+  const willAutoAssign = canAutoAssign && !order.dispatch_id && !!chosenAgent;
 
   async function confirm() {
     const patch = {
@@ -618,13 +619,17 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Confirm order · {order.customer}</h3>
-        <label style={{ marginTop: 0 }}>Delivery state</label>
-        <select value={stateValue} onChange={e => setStateValue(e.target.value)}>
-          <option value="">— Select the customer's state —</option>
-          {NIGERIA_STATES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        {!stateValue && <p style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px' }}>Without a state, this can't auto-assign to dispatch — admin will need to assign manually.</p>}
-        <label>Priority</label>
+        {canAutoAssign && (
+          <>
+            <label style={{ marginTop: 0 }}>Delivery state</label>
+            <select value={stateValue} onChange={e => setStateValue(e.target.value)}>
+              <option value="">— Select the customer's state —</option>
+              {NIGERIA_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {!stateValue && <p style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px' }}>Without a state, this can't auto-assign to dispatch — admin will need to assign manually.</p>}
+          </>
+        )}
+        <label style={{ marginTop: canAutoAssign ? undefined : 0 }}>Priority</label>
         <select value={priority} onChange={e => setPriority(e.target.value)}>
           <option value="Normal">Normal</option>
           <option value="High">High priority</option>
@@ -2248,7 +2253,7 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
 // ---------- Phase 1 fraud-proof upsell system ----------
 
-export function AddUpsellModal({ order, products, packages, productSets, currentUpsells, profile, session, onClose, onCreated }) {
+export function AddUpsellModal({ order, products, packages, productSets, currentUpsells, profile, profiles, session, onClose, onCreated }) {
   const [targetType, setTargetType] = useState('product');
   const [upsellProductId, setUpsellProductId] = useState('');
   const [upsellPackageId, setUpsellPackageId] = useState('');
@@ -2298,9 +2303,12 @@ export function AddUpsellModal({ order, products, packages, productSets, current
     });
     setSaving(false);
     if (rpcError) { setError(rpcError.message); return; }
-    if (order.dispatch_id) {
+    const notifyIds = [];
+    if (order.dispatch_id) notifyIds.push(order.dispatch_id);
+    (profiles || []).filter(p => p.role === 'admin' && p.id !== profile?.id).forEach(p => notifyIds.push(p.id));
+    if (notifyIds.length > 0) {
       sendPushNotification(session, {
-        userIds: [order.dispatch_id], title: 'Order package changed',
+        userIds: notifyIds, title: 'Order package changed',
         body: `${order.customer} — deliver the updated package, not the original`,
         url: '/dashboard',
       });
