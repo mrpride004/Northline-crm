@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -65,6 +65,15 @@ function DashboardInner() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState({});
   const [notifMsg, setNotifMsg] = useState('');
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+
+  async function refreshUnreadCount() {
+    if (!profile) return;
+    const { count } = await supabase.from('messages').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).is('read_at', null);
+    setUnreadMessageCount(count || 0);
+  }
+  useEffect(() => { refreshUnreadCount(); }, [profile]);
+  useEffect(() => { if (page !== 'messages') refreshUnreadCount(); }, [page]);
   const lastLocalActionRef = useRef(0);
   const hasRestoredPage = useRef(false);
   useEffect(() => {
@@ -309,23 +318,25 @@ function DashboardInner() {
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
-    { key: 'messages', label: 'Messages' },
+    { key: 'messages', label: 'Messages', count: unreadMessageCount },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
     { key: 'dashboard', label: 'My orders', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
     { key: 'commission', label: 'My Commission' },
-    { key: 'messages', label: 'Messages' },
+    { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : profile.role === 'dispatch' ? [
     { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     { key: 'mystock', label: 'My stock' },
-    { key: 'messages', label: 'Messages' },
+    { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : isInventoryManager ? [
     { key: 'dashboard', label: 'Inventory' },
-    { key: 'messages', label: 'Messages' },
+    { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : [
     { key: 'dashboard', label: 'Submit orders' },
-    { key: 'messages', label: 'Messages' },
+    { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ];
 
   const finalNavItems = (profile.allowed_sections && profile.allowed_sections.length > 0)
@@ -375,6 +386,7 @@ function DashboardInner() {
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
+        {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} session={session} profile={profile} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
@@ -1665,7 +1677,7 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
   }
   return (
     <div>
-      <div className="topbar"><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Add packages to bundle a free gift with a product, or group several products together as a Set.</p></div></div>
+      <div className="topbar" style={{ borderLeft: '4px solid #4A7FBF', paddingLeft: '14px' }}><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Add packages to bundle a free gift with a product, or group several products together as a Set.</p></div></div>
       <div className="product-tabs">
         <span className={'ptab' + (tab === 'products' ? ' active' : '')} onClick={() => setTab('products')}>Products</span>
         <span className={'ptab' + (tab === 'sets' ? ' active' : '')} onClick={() => setTab('sets')}>Sets</span>

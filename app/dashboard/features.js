@@ -400,7 +400,7 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
 
   return (
     <div>
-      <div className="topbar">
+      <div className="topbar" style={{ borderLeft: '4px solid #C6862F', paddingLeft: '14px' }}>
         <div><h1 className="page-title">Agent stock</h1><p className="page-sub">Send stock to a dispatch agent — this pulls it from central inventory. See what they're currently holding.</p></div>
       </div>
       <div style={{ marginBottom: '18px', maxWidth: '360px' }}>
@@ -1033,6 +1033,18 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
   const [passwordMsg, setPasswordMsg] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
   const [notifyTarget, setNotifyTarget] = useState('all_staff');
+  const [historyPersonId, setHistoryPersonId] = useState('');
+  const [historyMessages, setHistoryMessages] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  async function loadHistory(personId) {
+    setHistoryPersonId(personId);
+    if (!personId) { setHistoryMessages([]); return; }
+    setLoadingHistory(true);
+    const { data } = await supabase.from('messages').select('*').eq('recipient_id', personId).order('created_at', { ascending: false });
+    setHistoryMessages(data || []);
+    setLoadingHistory(false);
+  }
   const [notifyMessage, setNotifyMessage] = useState('');
   const [notifyStatus, setNotifyStatus] = useState('');
   const [sendingNotify, setSendingNotify] = useState(false);
@@ -1161,6 +1173,32 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
           Only reaches people who've turned on push notifications from their sidebar. It won't wake up someone who hasn't enabled it yet.
         </p>
         {notifyStatus && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '6px' }}>{notifyStatus}</p>}
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Message history</h3>
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', maxWidth: '520px', marginBottom: '22px' }}>
+        <label className="field-label" style={{ marginTop: 0 }}>View history for</label>
+        <select value={historyPersonId} onChange={e => loadHistory(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
+          <option value="">— Choose a person —</option>
+          {(profiles || []).filter(p => p.role !== 'admin').map(p => (
+            <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>
+          ))}
+        </select>
+        {loadingHistory && <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p>}
+        {!loadingHistory && historyPersonId && historyMessages.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No messages sent to this person yet.</p>}
+        {!loadingHistory && historyMessages.map(m => (
+          <div key={m.id} style={{ borderBottom: '1px solid #F0EEE8', padding: '10px 0' }}>
+            <div style={{ fontSize: '13px' }}>{m.body}</div>
+            <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>
+              Sent {new Date(m.created_at).toLocaleString()} ·{' '}
+              {m.read_at ? (
+                <span style={{ color: '#2E6E62' }}>Read {new Date(m.read_at).toLocaleString()}</span>
+              ) : (
+                <span style={{ color: '#B0483F', fontWeight: 600 }}>Unread</span>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Order confirmation to customers</h3>
@@ -1587,7 +1625,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
 
   return (
     <div>
-      <div className="topbar">
+      <div className="topbar" style={{ borderLeft: '4px solid #4A9B6E', paddingLeft: '14px' }}>
         <div><h1 className="page-title">Inventory</h1><p className="page-sub">Stock automatically drops as orders come in. Any addition below adds to what's already there — use "Set exact" only when you want to replace the number entirely.</p></div>
       </div>
       <table>
@@ -2957,6 +2995,8 @@ export function InventoryHub({ products, orders, profiles, agentStock, refresh }
 export function MessagesPage({ profile }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+  const [sortOrder, setSortOrder] = useState('newest');
 
   useEffect(() => { load(); }, []);
   async function load() {
@@ -2971,17 +3011,32 @@ export function MessagesPage({ profile }) {
 
   if (loading) return <div className="loading">Loading messages…</div>;
 
+  const filtered = messages.filter(m => filter === 'all' ? true : filter === 'unread' ? !m.read_at : !!m.read_at);
+  const sorted = filtered.slice().sort((a, b) => sortOrder === 'newest'
+    ? new Date(b.created_at) - new Date(a.created_at)
+    : new Date(a.created_at) - new Date(b.created_at));
+  const unreadCount = messages.filter(m => !m.read_at).length;
+
   return (
     <div>
       <div className="topbar"><div><h1 className="page-title">Messages</h1><p className="page-sub">Messages sent to you by admin.</p></div></div>
-      {messages.length === 0 ? (
-        <div className="empty">No messages yet.</div>
+      {messages.length > 0 && (
+        <div className="product-tabs" style={{ marginBottom: '16px' }}>
+          <span className={'ptab' + (filter === 'all' ? ' active' : '')} onClick={() => setFilter('all')}>All ({messages.length})</span>
+          <span className={'ptab' + (filter === 'unread' ? ' active' : '')} onClick={() => setFilter('unread')}>Unread ({unreadCount})</span>
+          <span className={'ptab' + (filter === 'read' ? ' active' : '')} onClick={() => setFilter('read')}>Read ({messages.length - unreadCount})</span>
+          <span className={'ptab' + (sortOrder === 'newest' ? ' active' : '')} onClick={() => setSortOrder('newest')}>Newest first</span>
+          <span className={'ptab' + (sortOrder === 'oldest' ? ' active' : '')} onClick={() => setSortOrder('oldest')}>Oldest first</span>
+        </div>
+      )}
+      {sorted.length === 0 ? (
+        <div className="empty">{messages.length === 0 ? 'No messages yet.' : 'Nothing matches this filter.'}</div>
       ) : (
         <div className="list-manage">
-          {messages.map(m => (
-            <div key={m.id} className="list-manage-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
+          {sorted.map(m => (
+            <div key={m.id} className="list-manage-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', background: m.read_at ? 'transparent' : '#FBF6EC' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                <span style={{ fontWeight: 600, fontSize: '12.5px' }}>{m.sender_name || 'Admin'}</span>
+                <span style={{ fontWeight: 600, fontSize: '12.5px' }}>{m.sender_name || 'Admin'} {!m.read_at && <span className="pill New" style={{ marginLeft: '6px' }}>New</span>}</span>
                 <span style={{ fontSize: '11px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</span>
               </div>
               <div style={{ fontSize: '13.5px' }}>{m.body}</div>
@@ -3169,4 +3224,68 @@ export function setStockLabel(set, products) {
     return !p || p.stock_quantity < i.quantity_per_set;
   });
   return { inStock: !short, text: short ? ' — OUT OF STOCK' : '' };
+}
+
+// ---------- Daily order summary for Staff and Dispatch ----------
+export function DailySummaryPage({ orders, profile, isDispatch }) {
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+
+  const mine = isDispatch ? orders.filter(o => o.dispatch_id === profile.id) : orders.filter(o => o.staff_id === profile.id);
+
+  const dayOrders = mine.filter(o => {
+    const created = new Date(o.created_at).toISOString().slice(0, 10);
+    return created === selectedDate;
+  });
+  const statusChangedThatDay = mine.filter(o => {
+    if (!o.status_updated_at) return false;
+    return new Date(o.status_updated_at).toISOString().slice(0, 10) === selectedDate;
+  });
+
+  const counts = {
+    received: dayOrders.length,
+    confirmed: statusChangedThatDay.filter(o => o.status === 'Confirmed').length,
+    delivered: statusChangedThatDay.filter(o => o.status === 'Delivered').length,
+    cancelled: statusChangedThatDay.filter(o => o.status === 'Cancelled').length,
+    unreachable: statusChangedThatDay.filter(o => o.status === 'Unreachable').length,
+    rescheduled: statusChangedThatDay.filter(o => o.status === 'Rescheduled').length,
+  };
+
+  // Union of "received that day" and "changed status that day" for the activity list, de-duplicated.
+  const activityMap = {};
+  [...dayOrders, ...statusChangedThatDay].forEach(o => { activityMap[o.id] = o; });
+  const activity = Object.values(activityMap).sort((a, b) => new Date(b.status_updated_at || b.created_at) - new Date(a.status_updated_at || a.created_at));
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Daily summary</h1><p className="page-sub">Pick a date to see what happened that day.</p></div></div>
+      <div style={{ marginBottom: '18px', maxWidth: '220px' }}>
+        <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+      </div>
+      <div className="stats" style={{ marginBottom: '20px' }}>
+        <div className="stat"><div className="stat-num">{counts.received}</div><div className="stat-label">Received</div></div>
+        <div className="stat"><div className="stat-num">{counts.confirmed}</div><div className="stat-label">Confirmed</div></div>
+        <div className="stat"><div className="stat-num">{counts.delivered}</div><div className="stat-label">Delivered</div></div>
+        <div className="stat"><div className="stat-num">{counts.cancelled}</div><div className="stat-label">Cancelled</div></div>
+        <div className="stat"><div className="stat-num">{counts.unreachable}</div><div className="stat-label">Unreachable</div></div>
+        <div className="stat"><div className="stat-num">{counts.rescheduled}</div><div className="stat-label">Rescheduled</div></div>
+      </div>
+      {activity.length === 0 ? (
+        <div className="empty">Nothing on this date.</div>
+      ) : (
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody>
+            {activity.map(o => (
+              <tr key={o.id}>
+                <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
+                <td>{o.customer}</td>
+                <td><span className={'pill ' + o.status}>{o.status}</span></td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
 }
