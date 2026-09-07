@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -66,14 +66,20 @@ function DashboardInner() {
   const [lastSeen, setLastSeen] = useState({});
   const [notifMsg, setNotifMsg] = useState('');
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
 
   async function refreshUnreadCount() {
     if (!profile) return;
     const { count } = await supabase.from('messages').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).is('read_at', null);
     setUnreadMessageCount(count || 0);
   }
-  useEffect(() => { refreshUnreadCount(); }, [profile]);
-  useEffect(() => { if (page !== 'messages') refreshUnreadCount(); }, [page]);
+  async function refreshUnreadNotificationCount() {
+    if (!profile) return;
+    const { count } = await supabase.from('notifications').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).is('read_at', null);
+    setUnreadNotificationCount(count || 0);
+  }
+  useEffect(() => { refreshUnreadCount(); refreshUnreadNotificationCount(); }, [profile]);
+  useEffect(() => { if (page !== 'messages') refreshUnreadCount(); if (page !== 'notifications') refreshUnreadNotificationCount(); }, [page]);
   const lastLocalActionRef = useRef(0);
   const hasRestoredPage = useRef(false);
   useEffect(() => {
@@ -131,7 +137,7 @@ function DashboardInner() {
           showOrderAlert(msg);
           playNotificationSound();
           if (profile.role !== 'admin') {
-            sendPushNotification(session, { userIds: [profile.id], title: 'New order', body: `${o.customer}${o.state ? ' · ' + o.state : ''}`, url: '/dashboard' });
+            notifyUsers(session, { userIds: [profile.id], type: 'new_order', title: 'New order', body: `${o.customer}${o.state ? ' · ' + o.state : ''}`, orderId: o.id });
           }
         }
         refreshAll();
@@ -145,12 +151,12 @@ function DashboardInner() {
         if (profile.role === 'dispatch' && o.dispatch_id === profile.id && before.dispatch_id !== profile.id && !echo) {
           showOrderAlert(`🔔 New delivery assigned — ${o.customer}${o.state ? ' · ' + o.state : ''}`);
           playNotificationSound();
-          sendPushNotification(session, { userIds: [profile.id], title: 'New delivery assigned', body: o.customer, url: '/dashboard' });
+          notifyUsers(session, { userIds: [profile.id], type: 'order_assigned', title: 'New delivery assigned', body: o.customer, orderId: o.id });
         }
         if (profile.role === 'staff' && o.staff_id === profile.id && before.staff_id !== profile.id && !echo) {
           showOrderAlert(`🔔 Order assigned to you — ${o.customer}`);
           playNotificationSound();
-          sendPushNotification(session, { userIds: [profile.id], title: 'Order assigned to you', body: o.customer, url: '/dashboard' });
+          notifyUsers(session, { userIds: [profile.id], type: 'order_assigned', title: 'Order assigned to you', body: o.customer, orderId: o.id });
         }
 
         // Status changes — curated per role so people aren't notified about their own actions
@@ -161,13 +167,13 @@ function DashboardInner() {
             const msg = `${o.customer} · #${orderNumber} — ${o.status}`;
             showOrderAlert(`🔔 ${msg}`);
             playNotificationSound();
-            sendPushNotification(session, { userIds: [profile.id], title: 'Order status changed', body: msg, url: '/dashboard' });
+            notifyUsers(session, { userIds: [profile.id], type: 'status_changed', title: 'Order status changed', body: msg, orderId: o.id });
           }
           if (profile.role === 'dispatch' && o.dispatch_id === profile.id) {
             const msg = `${o.customer} · #${orderNumber} is now ${o.status}`;
             showOrderAlert(`🔔 ${msg}`);
             playNotificationSound();
-            sendPushNotification(session, { userIds: [profile.id], title: 'Order status changed', body: msg, url: '/dashboard' });
+            notifyUsers(session, { userIds: [profile.id], type: 'status_changed', title: 'Order status changed', body: msg, orderId: o.id });
           }
         }
         refreshAll();
@@ -188,6 +194,20 @@ function DashboardInner() {
       })
       .subscribe();
     return () => { supabase.removeChannel(msgChannel); };
+  }, [profile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const notifChannel = supabase
+      .channel('notifications-live-' + profile.id)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${profile.id}` }, (payload) => {
+        const n = payload.new;
+        showOrderAlert(`🔔 ${n.title} — ${n.body}`);
+        playNotificationSound();
+        refreshUnreadNotificationCount();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(notifChannel); };
   }, [profile]);
 
   const hasCheckedNewInfo = useRef(false);
@@ -332,6 +352,7 @@ function DashboardInner() {
     { key: 'team', label: 'Team' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
+    { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
     { key: 'settings', label: 'Settings' },
   ] : profile.role === 'staff' ? [
@@ -339,17 +360,21 @@ function DashboardInner() {
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
     { key: 'commission', label: 'My Commission' },
     { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : profile.role === 'dispatch' ? [
     { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     { key: 'mystock', label: 'My stock' },
     { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : isInventoryManager ? [
     { key: 'dashboard', label: 'Inventory' },
+    { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : [
     { key: 'dashboard', label: 'Submit orders' },
+    { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ];
 
@@ -400,6 +425,7 @@ function DashboardInner() {
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
+        {page === 'notifications' && <NotificationsPage profile={profile} />}
         {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
 
@@ -845,9 +871,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       const notifyIds = profiles
         .filter(p => p.role === 'admin' || (p.role === 'staff' && p.active && p.id !== profile?.id))
         .map(p => p.id);
-      sendPushNotification(session, {
-        userIds: notifyIds, title: 'New order', body: `${data.customer}${data.state ? ' · ' + data.state : ''}`,
-        url: '/dashboard',
+      notifyUsers(session, {
+        userIds: notifyIds, type: 'new_order', title: 'New order', body: `${data.customer}${data.state ? ' · ' + data.state : ''}`,
+        orderId: data.id,
       });
     }
     refresh();
@@ -910,9 +936,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
       const newlyAssigned = [patch.staff_id, patch.dispatch_id].filter(pid => pid && pid !== current?.staff_id && pid !== current?.dispatch_id);
       if (newlyAssigned.length > 0) {
-        sendPushNotification(session, {
-          userIds: newlyAssigned, title: 'Order assigned to you', body: current ? current.customer : 'An order was just assigned to you.',
-          url: '/dashboard',
+        notifyUsers(session, {
+          userIds: newlyAssigned, type: 'order_assigned', title: 'Order assigned to you', body: current ? current.customer : 'An order was just assigned to you.',
+          orderId: id,
         });
       }
     }

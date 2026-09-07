@@ -85,6 +85,20 @@ export async function sendPushNotification(session, { userIds, title, body, url 
   } catch (e) { /* best-effort — never block the main action on this */ }
 }
 
+// The real fix for unreliable notifications: every important event creates a
+// PERSISTENT row per recipient (readable/recoverable later, tracked read/unread),
+// in addition to the best-effort push. Use this instead of sendPushNotification
+// directly for anything the recipient genuinely must not miss.
+export async function notifyUsers(session, { userIds, type, title, body, orderId }) {
+  if (!userIds || userIds.length === 0) return;
+  try {
+    await supabase.from('notifications').insert(
+      userIds.map(uid => ({ recipient_id: uid, type: type || 'general', title, body, order_id: orderId || null }))
+    );
+  } catch (e) { /* if this fails we still try push below, better than nothing */ }
+  sendPushNotification(session, { userIds, title, body, url: '/dashboard' });
+}
+
 
 export function showToast(message) {
   if (typeof document === 'undefined') return;
@@ -682,7 +696,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
     await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
     if (willAutoAssign) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${stateValue}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
-      sendPushNotification(session, { userIds: [chosenAgent.id], title: 'New delivery assigned', body: order.customer, url: '/dashboard' });
+      notifyUsers(session, { userIds: [chosenAgent.id], type: 'order_assigned', title: 'New delivery assigned', body: order.customer, orderId: order.id });
     }
     if (remark.trim()) {
       await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
@@ -3469,6 +3483,59 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
             </tbody>
           </table>
         </>
+      )}
+    </div>
+  );
+}
+
+// ---------- Persistent notifications inbox — order alerts that survive being offline ----------
+export function NotificationsPage({ profile }) {
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('notifications').select('*').eq('recipient_id', profile.id).order('created_at', { ascending: false }).limit(100);
+    setNotifications(data || []);
+    setLoading(false);
+    const unread = (data || []).filter(n => !n.read_at);
+    if (unread.length > 0) {
+      await supabase.from('notifications').update({ read_at: new Date().toISOString() }).in('id', unread.map(n => n.id));
+    }
+  }
+
+  if (loading) return <div className="loading">Loading notifications…</div>;
+
+  const filtered = notifications.filter(n => filter === 'all' ? true : filter === 'unread' ? !n.read_at : !!n.read_at);
+  const unreadCount = notifications.filter(n => !n.read_at).length;
+
+  const typeIcon = { new_order: '🆕', order_assigned: '📦', status_changed: '🔄', package_changed: '⬆' };
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Notifications</h1><p className="page-sub">Order alerts — these stay here even if you missed them at the time.</p></div></div>
+      {notifications.length > 0 && (
+        <div className="product-tabs" style={{ marginBottom: '16px' }}>
+          <span className={'ptab' + (filter === 'all' ? ' active' : '')} onClick={() => setFilter('all')}>All ({notifications.length})</span>
+          <span className={'ptab' + (filter === 'unread' ? ' active' : '')} onClick={() => setFilter('unread')}>Unread ({unreadCount})</span>
+          <span className={'ptab' + (filter === 'read' ? ' active' : '')} onClick={() => setFilter('read')}>Read ({notifications.length - unreadCount})</span>
+        </div>
+      )}
+      {filtered.length === 0 ? (
+        <div className="empty">{notifications.length === 0 ? 'No notifications yet.' : 'Nothing matches this filter.'}</div>
+      ) : (
+        <div className="list-manage">
+          {filtered.map(n => (
+            <div key={n.id} className="list-manage-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', background: n.read_at ? 'transparent' : '#FBF6EC' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                <span style={{ fontWeight: 600, fontSize: '12.5px' }}>{typeIcon[n.type] || '🔔'} {n.title} {!n.read_at && <span className="pill New" style={{ marginLeft: '6px' }}>New</span>}</span>
+                <span style={{ fontSize: '11px', color: '#8A93A0' }}>{new Date(n.created_at).toLocaleString()}</span>
+              </div>
+              <div style={{ fontSize: '13.5px' }}>{n.body}</div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
