@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage } from './features';
+import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -400,7 +400,7 @@ function DashboardInner() {
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
-        {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} isDispatch={profile.role === 'dispatch'} />}
+        {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
@@ -895,7 +895,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     if (patch.status === 'Cancelled' && current && current.status === 'Delivered') {
       await adjustStockForOrder(current, 1);
     }
-    await supabase.from('orders').update(patch).eq('id', id);
+    const { error: updateError } = await supabase.from('orders').update(patch).eq('id', id);
+    if (updateError) { alert('Unable to update this order. Please try again.'); return; }
     if (patch.status && current && patch.status !== current.status) {
       await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
       if (patch.status === 'Cancelled' && current.status === 'Delivered') {
@@ -953,7 +954,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
   async function withdrawUpsell(u) {
     const { error } = await supabase.rpc('withdraw_upsell', { p_upsell_id: u.id });
-    if (error) { alert(error.message); return; }
+    if (error) { alert('Unable to withdraw this right now — it may have already moved on to the next step.'); return; }
     refresh();
   }
 
@@ -1285,7 +1286,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
       {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
-      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} profiles={profiles} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); }} />}
+      {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} profiles={profiles} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); showToast('Package updated successfully'); }} />}
       {confirmDeleteOrder && (
         <div className="overlay" onClick={() => setConfirmDeleteOrder(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1518,7 +1519,8 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
     }
     if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
     if (status === 'Cancelled' && fee !== undefined && fee !== '') patch.delivery_fee = fee;
-    await supabase.from('orders').update(patch).eq('id', o.id);
+    const { error: updateError } = await supabase.from('orders').update(patch).eq('id', o.id);
+    if (updateError) { alert('Unable to update this order. Please try again.'); return; }
     await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
     if (status === 'Delivered' && paidNow) {
       await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment collected at delivery — marked as Paid.' });
@@ -1826,7 +1828,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
   }, []);
 
   async function setAsAutoAssign(agent) {
-    if (!agent.state) { alert('This dispatch partner needs a state set first (edit them in Supabase or recreate with a state).'); return; }
+    if (!agent.state) { alert('This dispatch partner needs a state set first. Edit their access to add a state, then try again.'); return; }
     await supabase.from('state_dispatch_preference').upsert({
       state: agent.state, dispatch_id: agent.id, active: true, assignment_mode: 'preferred', updated_at: new Date().toISOString(),
     });
@@ -1982,6 +1984,9 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                         </button>
                         <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_auto_assign: s.can_auto_assign === false }).eq('id', s.id); refresh(); }}>
                           {s.can_auto_assign === false ? 'Auto-assign: Off' : 'Auto-assign: On'}
+                        </button>
+                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_view_dispatch_success_rate: !s.can_view_dispatch_success_rate }).eq('id', s.id); refresh(); }}>
+                          {s.can_view_dispatch_success_rate ? 'Dispatch stats: On' : 'Dispatch stats: Off'}
                         </button>
                       </>
                     )}

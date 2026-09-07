@@ -457,14 +457,15 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
           <table style={{ marginBottom: '20px' }}>
             <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Low-stock alert below</th><th>Send more</th><th>Collect back</th></tr></thead>
             <tbody>
-              {products.map(p => {
+              {products.map((p, pIdx) => {
                 const row = rowFor(p.id);
                 const qty = stockFor(p.id);
                 const threshold = row?.low_stock_threshold;
                 const isLow = threshold != null && qty <= threshold;
+                const dotColor = ['#4A7FBF', '#4A9B6E', '#C6862F', '#8A5EBF', '#BF5E6E', '#5EA3BF'][pIdx % 6];
                 return (
                 <tr key={p.id}>
-                  <td>{p.name}</td>
+                  <td><span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: dotColor, marginRight: '7px' }}></span>{p.name}</td>
                   <td><span className={'pill ' + (p.stock_quantity > 0 ? 'Delivered' : 'Cancelled')}>{p.stock_quantity} available</span></td>
                   <td>
                     <span style={isLow ? { color: '#B0483F', fontWeight: 700 } : {}}>{qty} units{isLow ? ' — LOW' : ''}</span>
@@ -1778,7 +1779,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
               <div key={state} style={{ marginBottom: '20px', borderLeft: `4px solid ${accent}`, paddingLeft: '12px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>{state}{agents.length > 1 ? ` (${agents.length} agents)` : ''}</div>
                 <table>
-                  <thead><tr><th>Agent</th>{products.map(p => <th key={p.id}>{p.name}</th>)}</tr></thead>
+                  <thead><tr><th>Agent</th>{products.map((p, pIdx) => <th key={p.id}><span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: ['#4A7FBF', '#4A9B6E', '#C6862F', '#8A5EBF', '#BF5E6E', '#5EA3BF'][pIdx % 6], marginRight: '5px' }}></span>{p.name}</th>)}</tr></thead>
                   <tbody>
                     {agents.map((a, agentIdx) => (
                       <tr key={a.id} style={{ background: agentIdx % 2 === 1 ? '#FAF8F4' : undefined }}>
@@ -2364,10 +2365,11 @@ export function AddUpsellModal({ order, products, packages, productSets, current
   }
 
   async function submit() {
+    if (order.status === 'Delivered') { setError('This order has already been delivered. Please select a valid package before delivery.'); return; }
     if (targetType === 'set') {
-      if (!upsellSetId || !additionalQuantity || unitPrice === '') { setError('Choose a set, quantity, and price.'); return; }
+      if (!upsellSetId || !additionalQuantity || unitPrice === '') { setError('Please select a valid package.'); return; }
     } else if (!upsellProductId || !additionalQuantity || unitPrice === '') {
-      setError('Fill in the upsell product, quantity, and price.'); return;
+      setError('Please select a valid package.'); return;
     }
     setSaving(true);
     const { data, error: rpcError } = await supabase.rpc('create_upsell', {
@@ -2379,7 +2381,7 @@ export function AddUpsellModal({ order, products, packages, productSets, current
       p_upsell_set_id: targetType === 'set' ? upsellSetId : null,
     });
     setSaving(false);
-    if (rpcError) { setError(rpcError.message); return; }
+    if (rpcError) { setError('Unable to update this order. Please try again.'); return; }
     const upsellId = data;
     const notifyIds = [];
     if (order.dispatch_id) notifyIds.push(order.dispatch_id);
@@ -3368,7 +3370,7 @@ export function setStockLabel(set, products) {
 }
 
 // ---------- Daily order summary for Staff and Dispatch ----------
-export function DailySummaryPage({ orders, profile, isDispatch }) {
+export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
@@ -3444,6 +3446,29 @@ export function DailySummaryPage({ orders, profile, isDispatch }) {
             ))}
           </tbody>
         </table>
+      )}
+      {!isDispatch && profile.can_view_dispatch_success_rate && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 10px' }}>Dispatch performance</h3>
+          <table>
+            <thead><tr><th>Dispatch partner</th><th>State</th><th>Delivered</th><th>Success rate</th></tr></thead>
+            <tbody>
+              {(profiles || []).filter(p => p.role === 'dispatch').map(d => {
+                const handled = orders.filter(o => o.dispatch_id === d.id);
+                const delivered = handled.filter(o => o.status === 'Delivered').length;
+                const rate = handled.length > 0 ? Math.round((delivered / handled.length) * 100) : 100;
+                return (
+                  <tr key={d.id}>
+                    <td>{d.full_name}</td>
+                    <td style={{ color: '#8A93A0' }}>{d.state || '—'}</td>
+                    <td>{delivered}</td>
+                    <td>{rate}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
       )}
     </div>
   );
