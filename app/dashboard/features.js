@@ -1995,24 +1995,52 @@ export function CommissionPage({ profile, orders, products, session }) {
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
   const [msg, setMsg] = useState('');
+  const [myEligibleUpsells, setMyEligibleUpsells] = useState([]);
+  const [approvingId, setApprovingId] = useState(null);
 
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }, { data: windowSetting }] = await Promise.all([
+    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }, { data: windowSetting }, { data: myUpsells }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'success_rate_window_days').maybeSingle(),
+      supabase.from('upsells').select('*').eq('staff_id', profile.id).eq('commission_status', 'Eligible').order('created_at', { ascending: false }),
     ]);
     setLedger(led || []);
     setClaims(cl || []);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
     setWindowDays(windowSetting ? parseInt(windowSetting.value, 10) || 30 : 30);
+    let upsellsWithRules = myUpsells || [];
+    const ruleIds = [...new Set(upsellsWithRules.map(u => u.commission_rule_id).filter(Boolean))];
+    if (ruleIds.length > 0) {
+      const { data: rules } = await supabase.from('upsell_commission_rules').select('*').in('id', ruleIds);
+      const ruleMap = {};
+      (rules || []).forEach(r => { ruleMap[r.id] = r; });
+      upsellsWithRules = upsellsWithRules.map(u => ({ ...u, _rule: u.commission_rule_id ? ruleMap[u.commission_rule_id] : null }));
+    }
+    setMyEligibleUpsells(upsellsWithRules);
     setLoading(false);
+  }
+
+  async function selfApprove(u) {
+    setApprovingId(u.id);
+    const { error } = await supabase.rpc('staff_approve_own_upsell', { p_upsell_id: u.id });
+    setApprovingId(null);
+    if (error) { alert('Unable to approve this right now.'); return; }
+    const { data: admins } = await supabase.from('profiles').select('id').eq('role', 'admin');
+    if (admins && admins.length > 0) {
+      notifyUsers(session, {
+        userIds: admins.map(a => a.id), type: 'upsell_auto_approved', title: 'Upsell auto-approved by staff',
+        body: `${profile.full_name} auto-approved their own commission (₦${Number(u.commission_amount).toLocaleString()}) on an eligible upgrade.`,
+        orderId: u.original_order_id,
+      });
+    }
+    load();
   }
 
   const myOrders = orders.filter(o => o.staff_id === profile.id);
@@ -2077,6 +2105,32 @@ export function CommissionPage({ profile, orders, products, session }) {
         </div>
         {msg && <p style={{ fontSize: '12.5px', marginTop: '12px' }}>{msg}</p>}
       </div>
+
+      {myEligibleUpsells.length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Upsells waiting on commission approval</h3>
+          <div className="list-manage" style={{ marginBottom: '22px' }}>
+            {myEligibleUpsells.map(u => {
+              const ord = orders.find(o => o.id === u.original_order_id);
+              const canAutoApprove = !!(u._rule && u._rule.auto_approve && profile.can_auto_approve_upsell);
+              return (
+                <div key={u.id} className="list-manage-row">
+                  <span>
+                    {ord ? ord.customer : 'Order'} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· ₦{Number(u.commission_amount).toLocaleString()} commission</span>
+                  </span>
+                  {canAutoApprove ? (
+                    <button className="btn primary" disabled={approvingId === u.id} onClick={() => selfApprove(u)}>
+                      {approvingId === u.id ? 'Approving…' : 'Approve Upsell'}
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '12px', color: '#8A93A0' }}>Waiting for admin approval</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Your delivery success rate</h3>
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '20px' }}>
@@ -2674,6 +2728,7 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
   const [commissionType, setCommissionType] = useState(rule.commission_type || 'fixed');
   const [commissionValue, setCommissionValue] = useState(rule.commission_value || 0);
   const [active, setActive] = useState(rule.active !== false);
+  const [autoApprove, setAutoApprove] = useState(rule.auto_approve || false);
   const [effectiveStart, setEffectiveStart] = useState(rule.effective_start || new Date().toISOString().slice(0, 10));
   const [effectiveEnd, setEffectiveEnd] = useState(rule.effective_end || '');
   const [eligibleStaff, setEligibleStaff] = useState(rule.eligible_staff || []);
@@ -2690,6 +2745,7 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
       commission_type: commissionType, commission_value: parseFloat(commissionValue) || 0,
       active, effective_start: effectiveStart, effective_end: effectiveEnd || null,
       eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
+      auto_approve: autoApprove,
     };
     if (isNew) {
       await supabase.from('upsell_commission_rules').insert(payload);
@@ -2761,6 +2817,12 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} /> Active
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+          <input type="checkbox" checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} /> Allow auto-approval for this rule
+        </label>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>
+          When on, a staff member you've specifically granted auto-approval permission can approve their own commission on this upgrade instead of waiting for you.
+        </p>
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={save}>Save rule</button>

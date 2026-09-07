@@ -2014,6 +2014,9 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                         <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_view_dispatch_success_rate: !s.can_view_dispatch_success_rate }).eq('id', s.id); refresh(); }}>
                           {s.can_view_dispatch_success_rate ? 'Dispatch stats: On' : 'Dispatch stats: Off'}
                         </button>
+                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_auto_approve_upsell: !s.can_auto_approve_upsell }).eq('id', s.id); refresh(); }}>
+                          {s.can_auto_approve_upsell ? 'Auto-approve upsells: On' : 'Auto-approve upsells: Off'}
+                        </button>
                       </>
                     )}
                     <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
