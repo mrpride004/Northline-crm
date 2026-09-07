@@ -339,12 +339,20 @@ export const NIGERIA_STATES = [
 export function AgentStockPage({ profiles, products, agentStock, refresh }) {
   const [agentId, setAgentId] = useState('');
   const [amounts, setAmounts] = useState({});
+  const [collectAmounts, setCollectAmounts] = useState({});
   const [thresholdEdits, setThresholdEdits] = useState({});
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [errors, setErrors] = useState({});
+  const [retrievals, setRetrievals] = useState([]);
   const dispatchList = profiles.filter(p => p.role === 'dispatch');
   const selected = dispatchList.find(d => d.id === agentId);
+
+  useEffect(() => { loadRetrievals(); }, []);
+  async function loadRetrievals() {
+    const { data } = await supabase.from('agent_stock_retrievals').select('*').order('collected_at', { ascending: false }).limit(50);
+    setRetrievals(data || []);
+  }
 
   function rowFor(pid) {
     return agentStock.find(a => a.agent_id === agentId && a.product_id === pid) || null;
@@ -370,6 +378,31 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
     }
     setAmounts({ ...amounts, [pid]: '' });
     refresh();
+  }
+
+  async function collect(pid) {
+    const amt = parseInt(collectAmounts[pid], 10);
+    if (!amt || amt <= 0 || !agentId) return;
+    const held = stockFor(pid);
+    if (amt > held) {
+      setErrors({ ...errors, [pid]: `This agent only has ${held} — can't collect ${amt}.` });
+      return;
+    }
+    setErrors({ ...errors, [pid]: null });
+    const { error } = await supabase.rpc('collect_agent_stock', { p_agent_id: agentId, p_product_id: pid, p_quantity: amt });
+    if (error) {
+      setErrors({ ...errors, [pid]: error.message });
+      return;
+    }
+    setCollectAmounts({ ...collectAmounts, [pid]: '' });
+    refresh();
+    loadRetrievals();
+  }
+
+  async function confirmReceived(id) {
+    await supabase.rpc('confirm_stock_received', { p_retrieval_id: id });
+    refresh();
+    loadRetrievals();
   }
 
   async function saveThreshold(pid) {
@@ -422,7 +455,7 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
       {agentId && (
         <>
           <table style={{ marginBottom: '20px' }}>
-            <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Low-stock alert below</th><th>Send more</th></tr></thead>
+            <thead><tr><th>Product</th><th>Central inventory</th><th>Agent currently holds</th><th>Low-stock alert below</th><th>Send more</th><th>Collect back</th></tr></thead>
             <tbody>
               {products.map(p => {
                 const row = rowFor(p.id);
@@ -455,6 +488,15 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
                     <button className="link-btn" onClick={() => send(p.id)}>Send</button>
                     {errors[p.id] && <div style={{ fontSize: '11px', color: '#B0483F', marginTop: '4px', maxWidth: '200px' }}>{errors[p.id]}</div>}
                   </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <input
+                      type="number" min="1" max={qty} placeholder="qty"
+                      value={collectAmounts[p.id] || ''}
+                      onChange={e => setCollectAmounts({ ...collectAmounts, [p.id]: e.target.value })}
+                      style={{ width: '80px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                    />{' '}
+                    <button className="link-btn" onClick={() => collect(p.id)}>Collect</button>
+                  </td>
                 </tr>
               );})}
             </tbody>
@@ -471,6 +513,38 @@ export function AgentStockPage({ profiles, products, agentStock, refresh }) {
           </div>
         </>
       )}
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 10px' }}>Stock collected from agents</h3>
+      {retrievals.filter(r => r.status === 'Pending Receipt').length > 0 && (
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: '#8A93A0', marginBottom: '6px' }}>AWAITING CONFIRMATION — not yet added back to central inventory</div>
+          {retrievals.filter(r => r.status === 'Pending Receipt').map(r => (
+            <div key={r.id} className="list-manage-row">
+              <span>
+                {r.quantity} × {(products.find(p => p.id === r.product_id) || {}).name || '—'} from {(profiles.find(p => p.id === r.agent_id) || {}).full_name || '—'}
+                <span style={{ color: '#8A93A0', fontSize: '11px' }}> · collected by {r.collected_by_name || '—'} · {new Date(r.collected_at).toLocaleString()}</span>
+              </span>
+              <button className="btn primary" onClick={() => confirmReceived(r.id)}>Confirm received</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <table>
+        <thead><tr><th>Date</th><th>Agent</th><th>Product</th><th>Qty</th><th>Status</th><th>Received</th></tr></thead>
+        <tbody>
+          {retrievals.length === 0 && <tr><td colSpan="6" className="empty">No collections recorded yet.</td></tr>}
+          {retrievals.map(r => (
+            <tr key={r.id}>
+              <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(r.collected_at).toLocaleString()}</td>
+              <td>{(profiles.find(p => p.id === r.agent_id) || {}).full_name || '—'}</td>
+              <td>{(products.find(p => p.id === r.product_id) || {}).name || '—'}</td>
+              <td>{r.quantity}</td>
+              <td><span className={'pill ' + (r.status === 'Received' ? 'Delivered' : 'New')}>{r.status}</span></td>
+              <td style={{ fontSize: '12px', color: '#8A93A0' }}>{r.received_at ? new Date(r.received_at).toLocaleString() : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -3259,21 +3333,32 @@ export function setStockLabel(set, products) {
 
 // ---------- Daily order summary for Staff and Dispatch ----------
 export function DailySummaryPage({ orders, profile, isDispatch }) {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
+
+  function setPreset(preset) {
+    const d = new Date();
+    if (preset === 'today') { setFromDate(todayStr); setToDate(todayStr); }
+    else if (preset === 'yesterday') {
+      d.setDate(d.getDate() - 1);
+      const s = d.toISOString().slice(0, 10);
+      setFromDate(s); setToDate(s);
+    } else if (preset === 'week') {
+      d.setDate(d.getDate() - 6);
+      setFromDate(d.toISOString().slice(0, 10)); setToDate(todayStr);
+    }
+  }
 
   const mine = isDispatch ? orders.filter(o => o.dispatch_id === profile.id) : orders.filter(o => o.staff_id === profile.id);
+  const inRange = dateStr => dateStr >= fromDate && dateStr <= toDate;
 
-  const dayOrders = mine.filter(o => {
-    const created = new Date(o.created_at).toISOString().slice(0, 10);
-    return created === selectedDate;
-  });
-  const statusChangedThatDay = mine.filter(o => {
-    if (!o.status_updated_at) return false;
-    return new Date(o.status_updated_at).toISOString().slice(0, 10) === selectedDate;
-  });
+  const dayOrders = mine.filter(o => inRange(new Date(o.created_at).toISOString().slice(0, 10)));
+  const statusChangedThatDay = mine.filter(o => o.status_updated_at && inRange(new Date(o.status_updated_at).toISOString().slice(0, 10)));
 
   const counts = {
     received: dayOrders.length,
+    new: dayOrders.filter(o => o.status === 'New').length,
     confirmed: statusChangedThatDay.filter(o => o.status === 'Confirmed').length,
     delivered: statusChangedThatDay.filter(o => o.status === 'Delivered').length,
     cancelled: statusChangedThatDay.filter(o => o.status === 'Cancelled').length,
@@ -3281,19 +3366,26 @@ export function DailySummaryPage({ orders, profile, isDispatch }) {
     rescheduled: statusChangedThatDay.filter(o => o.status === 'Rescheduled').length,
   };
 
-  // Union of "received that day" and "changed status that day" for the activity list, de-duplicated.
+  // Union of "received in range" and "changed status in range" for the activity list, de-duplicated.
   const activityMap = {};
   [...dayOrders, ...statusChangedThatDay].forEach(o => { activityMap[o.id] = o; });
   const activity = Object.values(activityMap).sort((a, b) => new Date(b.status_updated_at || b.created_at) - new Date(a.status_updated_at || a.created_at));
 
   return (
     <div>
-      <div className="topbar"><div><h1 className="page-title">Daily summary</h1><p className="page-sub">Pick a date to see what happened that day.</p></div></div>
-      <div style={{ marginBottom: '18px', maxWidth: '220px' }}>
-        <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+      <div className="topbar"><div><h1 className="page-title">Daily summary</h1><p className="page-sub">Pick a date or range to see what happened.</p></div></div>
+      <div className="product-tabs" style={{ marginBottom: '12px' }}>
+        <span className="ptab" onClick={() => setPreset('today')}>Today</span>
+        <span className="ptab" onClick={() => setPreset('yesterday')}>Yesterday</span>
+        <span className="ptab" onClick={() => setPreset('week')}>Last 7 days</span>
+      </div>
+      <div className="row2" style={{ marginBottom: '18px', maxWidth: '420px' }}>
+        <div><label className="field-label" style={{ marginTop: 0 }}>From</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+        <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
       </div>
       <div className="stats" style={{ marginBottom: '20px' }}>
         <div className="stat"><div className="stat-num">{counts.received}</div><div className="stat-label">Received</div></div>
+        <div className="stat"><div className="stat-num">{counts.new}</div><div className="stat-label">New</div></div>
         <div className="stat"><div className="stat-num">{counts.confirmed}</div><div className="stat-label">Confirmed</div></div>
         <div className="stat"><div className="stat-num">{counts.delivered}</div><div className="stat-label">Delivered</div></div>
         <div className="stat"><div className="stat-num">{counts.cancelled}</div><div className="stat-label">Cancelled</div></div>
@@ -3301,7 +3393,7 @@ export function DailySummaryPage({ orders, profile, isDispatch }) {
         <div className="stat"><div className="stat-num">{counts.rescheduled}</div><div className="stat-label">Rescheduled</div></div>
       </div>
       {activity.length === 0 ? (
-        <div className="empty">Nothing on this date.</div>
+        <div className="empty">Nothing in this range.</div>
       ) : (
         <table>
           <thead><tr><th>Order</th><th>Customer</th><th>Status</th><th>Time</th></tr></thead>

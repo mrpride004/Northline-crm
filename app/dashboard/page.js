@@ -176,6 +176,20 @@ function DashboardInner() {
     return () => { supabase.removeChannel(channel); };
   }, [profile, session]);
 
+  useEffect(() => {
+    if (!profile) return;
+    const msgChannel = supabase
+      .channel('messages-live-' + profile.id)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `recipient_id=eq.${profile.id}` }, (payload) => {
+        const m = payload.new;
+        showOrderAlert(`💬 ${m.sender_name || 'Admin'}: ${m.body}`);
+        playNotificationSound();
+        refreshUnreadCount();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(msgChannel); };
+  }, [profile]);
+
   const hasCheckedNewInfo = useRef(false);
   useEffect(() => {
     if (!profile || orders.length === 0 || hasCheckedNewInfo.current) return;
