@@ -3737,12 +3737,11 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
       default_state: defaultState || null, api_key: apiKey, active: true,
       field_mapping: showFieldMapping ? cleanedMapping : {},
     };
-    if (isNew) {
-      await supabase.from('landing_page_sources').insert(payload);
-    } else {
-      await supabase.from('landing_page_sources').update(payload).eq('id', source.id);
-    }
+    const { error } = isNew
+      ? await supabase.from('landing_page_sources').insert(payload)
+      : await supabase.from('landing_page_sources').update(payload).eq('id', source.id);
     setSaving(false);
+    if (error) { alert('Unable to save this landing page source right now. Please try again.'); return; }
     onClose();
   }
 
@@ -3751,6 +3750,48 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
   function copyKey() {
     copyToClipboard(apiKey, 'API key copied');
     setCopied(true);
+  }
+
+  const [testResult, setTestResult] = useState(null);
+  const [testing, setTesting] = useState(false);
+
+  function setDeep(obj, path, value) {
+    const keys = path.split('.');
+    let cur = obj;
+    keys.forEach((k, i) => {
+      if (i === keys.length - 1) { cur[k] = value; }
+      else { cur[k] = cur[k] || {}; cur = cur[k]; }
+    });
+  }
+
+  async function sendTestOrder() {
+    setTesting(true);
+    setTestResult(null);
+    const sampleValues = {
+      customer: 'Test Customer', phone: '08000000000', phone2: '08000000001',
+      address: '123 Test Street', state: 'Lagos',
+      selected_option: options[0] && options[0].label ? options[0].label : 'Test option',
+    };
+    let testBody = { api_key: apiKey };
+    if (showFieldMapping && Object.values(fieldMapping).some(v => v && v.trim())) {
+      Object.entries(fieldMapping).forEach(([field, path]) => {
+        if (path && path.trim()) setDeep(testBody, path.trim(), sampleValues[field]);
+      });
+    } else {
+      testBody = { ...testBody, ...sampleValues };
+    }
+    try {
+      const res = await fetch(endpointUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(testBody),
+      });
+      const json = await res.json();
+      setTestResult({ ok: res.ok, status: res.status, json, sentBody: testBody });
+    } catch (e) {
+      setTestResult({ ok: false, status: 'network error', json: { error: e.message }, sentBody: testBody });
+    }
+    setTesting(false);
   }
 
   return (
@@ -3854,6 +3895,24 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
             <button className="link-btn" style={{ marginTop: '8px' }} onClick={copyKey}>{copied ? '✓ Copied' : '📋 Copy API key'}</button>
           </div>
         ) : null}
+
+        <div style={{ marginTop: '16px' }}>
+          <button className="btn" onClick={sendTestOrder} disabled={testing}>{testing ? 'Sending test…' : '🧪 Send a test order (bypasses WordPress)'}</button>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>
+            Sends fake sample data straight from your browser to the CRM, shaped using whatever mapping is filled in above. If this succeeds but your real form still doesn't, the problem is on the WordPress/WP Webhooks side. If this fails too, the problem is here in the CRM setup.
+          </p>
+          {testResult && (
+            <div style={{ background: testResult.ok ? '#EAF4F1' : '#FBEAE8', border: '1px solid ' + (testResult.ok ? '#2E6E62' : '#B0483F'), borderRadius: '8px', padding: '12px', marginTop: '8px' }}>
+              <div style={{ fontWeight: 600, fontSize: '12.5px', color: testResult.ok ? '#1F4D44' : '#B0483F', marginBottom: '6px' }}>
+                {testResult.ok ? `✓ Success — order #${testResult.json.serial_number || '?'} created` : `✕ Failed (status ${testResult.status})`}
+              </div>
+              <code style={{ fontSize: '10.5px', display: 'block', background: '#fff', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {JSON.stringify(testResult.json, null, 2)}
+              </code>
+              <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '6px' }}>Sent: {JSON.stringify(testResult.sentBody)}</div>
+            </div>
+          )}
+        </div>
 
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
