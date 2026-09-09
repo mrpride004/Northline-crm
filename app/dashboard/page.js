@@ -14,6 +14,22 @@ const APP_SECTIONS = [
   { key: 'commission', label: 'Commission' },
 ];
 
+// Permission-ish columns on `profiles` that can now be either left NULL
+// (inherit from role_permission_defaults) or explicitly overridden for one
+// person. Booleans: NULL = inherit. Arrays: NULL = inherit, [] = explicit
+// "unrestricted" override, non-empty = explicit restricted-list override.
+const OVERRIDABLE_BOOL_KEYS = ['can_create_orders', 'can_upsell', 'can_auto_assign', 'can_view_dispatch_success_rate', 'can_auto_approve_upsell'];
+const OVERRIDABLE_ARRAY_KEYS = ['allowed_statuses', 'allowed_sections', 'allowed_products'];
+
+function withEffectivePermissions(person, roleDefaultsMap) {
+  const d = roleDefaultsMap && roleDefaultsMap[person.role];
+  if (!d) return person;
+  const merged = { ...person };
+  OVERRIDABLE_BOOL_KEYS.forEach(k => { if (merged[k] === null || merged[k] === undefined) merged[k] = d[k]; });
+  OVERRIDABLE_ARRAY_KEYS.forEach(k => { if (merged[k] === null || merged[k] === undefined) merged[k] = d[k] || []; });
+  return merged;
+}
+
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -64,6 +80,8 @@ function DashboardInner() {
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState({});
+  const [roleDefaults, setRoleDefaults] = useState({});
+  const [focusPersonId, setFocusPersonId] = useState(null);
   const [notifMsg, setNotifMsg] = useState('');
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
@@ -95,8 +113,14 @@ function DashboardInner() {
       const { data: { session: s } } = await supabase.auth.getSession();
       if (!s) { router.replace('/login'); return; }
       setSession(s);
-      const { data: p } = await supabase.from('profiles').select('*').eq('id', s.user.id).single();
-      setProfile(p);
+      const [{ data: p }, { data: rd }] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', s.user.id).single(),
+        supabase.from('role_permission_defaults').select('*'),
+      ]);
+      const rdMap = {};
+      (rd || []).forEach(r => { rdMap[r.role] = r; });
+      setRoleDefaults(rdMap);
+      setProfile(p ? withEffectivePermissions(p, rdMap) : p);
       await refreshAll();
       silentlyRelinkPush(s);
       if (p && p.role === 'admin') {
@@ -232,7 +256,7 @@ function DashboardInner() {
 
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -244,10 +268,14 @@ function DashboardInner() {
       supabase.from('upsells').select('*'),
       supabase.from('product_sets').select('*').eq('active', true),
       supabase.from('product_set_items').select('*'),
+      supabase.from('role_permission_defaults').select('*'),
     ]);
     setProducts(prod || []);
     setOrders(ord || []);
     setProfiles(profs || []);
+    const rdMap = {};
+    (rd || []).forEach(r => { rdMap[r.role] = r; });
+    setRoleDefaults(rdMap);
     setAgentStock(stock || []);
     const settingsMap = {};
     (settingsRows || []).forEach(r => { settingsMap[r.key] = r.value; });
@@ -350,6 +378,7 @@ function DashboardInner() {
     { key: 'products', label: 'Products' },
     { key: 'inventory', label: 'Inventory' },
     { key: 'team', label: 'Team' },
+    { key: 'permissions', label: 'Permissions' },
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
     { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
@@ -421,7 +450,8 @@ function DashboardInner() {
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
-        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
+        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
+        {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} products={products} productSets={productSets} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
@@ -1834,7 +1864,7 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
   );
 }
 
-function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
+function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOpenPermissions }) {
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -1844,7 +1874,6 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
   const [allowedProducts, setAllowedProducts] = useState([]);
   const [allowedSections, setAllowedSections] = useState([]);
   const [status, setStatus] = useState('');
-  const [editingAccess, setEditingAccess] = useState(null);
   const [viewingPerson, setViewingPerson] = useState(null);
   const staffList = profiles.filter(p => p.role !== 'admin');
   const isSubmitterRole = ['manager', 'logistics', 'marketer'].includes(role);
@@ -1859,35 +1888,6 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     { key: 'inventory', label: 'Inventory' },
   ];
   const visibleStaffList = roleTab === 'all' ? staffList : staffList.filter(s => s.role === roleTab);
-  const [statePrefs, setStatePrefs] = useState({});
-
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from('state_dispatch_preference').select('*');
-      const map = {};
-      (data || []).forEach(r => { map[r.state] = r; });
-      setStatePrefs(map);
-    })();
-  }, []);
-
-  async function setAsAutoAssign(agent) {
-    if (!agent.state) { alert('This dispatch partner needs a state set first. Edit their access to add a state, then try again.'); return; }
-    await supabase.from('state_dispatch_preference').upsert({
-      state: agent.state, dispatch_id: agent.id, active: true, assignment_mode: 'preferred', updated_at: new Date().toISOString(),
-    });
-    const { data } = await supabase.from('state_dispatch_preference').select('*');
-    const map = {};
-    (data || []).forEach(r => { map[r.state] = r; });
-    setStatePrefs(map);
-  }
-
-  async function clearAutoAssign(agent) {
-    await supabase.from('state_dispatch_preference').update({ active: false }).eq('state', agent.state);
-    const { data } = await supabase.from('state_dispatch_preference').select('*');
-    const map = {};
-    (data || []).forEach(r => { map[r.state] = r; });
-    setStatePrefs(map);
-  }
 
   function toggleIn(id, list, setList) {
     setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
@@ -1916,7 +1916,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
         state: role === 'dispatch' ? state : null,
         allowed_products: isSubmitterRole ? allowedProducts : null,
         allowed_sections: allowedSections.length > 0 ? allowedSections : null,
-        allowed_statuses: role === 'staff' ? ['Confirmed', 'Rescheduled', 'Unreachable', 'Cancelled'] : null,
+        allowed_statuses: null,
         username: username.trim() || null,
       }),
     });
@@ -1958,20 +1958,9 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
     if (res.ok) setNewPasswordValue('');
   }
 
-  async function saveAccess(id, productList, sectionList, canCreateOrders, allowedStatuses) {
-    await supabase.from('profiles').update({
-      allowed_products: productList,
-      allowed_sections: sectionList.length > 0 ? sectionList : null,
-      can_create_orders: canCreateOrders,
-      allowed_statuses: allowedStatuses && allowedStatuses.length > 0 ? allowedStatuses : null,
-    }).eq('id', id);
-    setEditingAccess(null);
-    refresh();
-  }
-
   return (
     <div>
-      <div className="topbar"><div><h1 className="page-title">Team</h1><p className="page-sub">Create a real login for each person — staff, dispatch, managers, or inventory. They can sign in with either their email or a username.</p></div></div>
+      <div className="topbar"><div><h1 className="page-title">Team</h1><p className="page-sub">Create a real login for each person — staff, dispatch, managers, or inventory. They can sign in with either their email or a username. Head to <span className="link-btn" onClick={() => onOpenPermissions()}>Permissions</span> to manage what each role or person can do.</p></div></div>
 
       <div className="product-tabs">
         {ROLE_TABS.map(t => {
@@ -2011,31 +2000,8 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
                   </>
                 ) : (
                   <>
-                    <button className="link-btn" onClick={() => setEditingAccess(s)}>Edit access</button>
+                    <button className="link-btn" onClick={() => onOpenPermissions(s.id)}>Permissions</button>
                     <button className="link-btn" onClick={() => setSettingPasswordFor(s.id)}>Set password</button>
-                    {s.role === 'dispatch' && (
-                      statePrefs[s.state]?.dispatch_id === s.id && statePrefs[s.state]?.active ? (
-                        <button className="btn" style={{ background: '#EAF4F1', color: '#1F4D44' }} onClick={() => clearAutoAssign(s)}>Auto-assign: ON — turn off</button>
-                      ) : (
-                        <button className="link-btn" onClick={() => setAsAutoAssign(s)}>Set as auto-assign for {s.state || 'their state'}</button>
-                      )
-                    )}
-                    {s.role === 'staff' && (
-                      <>
-                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_upsell: s.can_upsell === false }).eq('id', s.id); refresh(); }}>
-                          {s.can_upsell === false ? 'Upsell: Off' : 'Upsell: On'}
-                        </button>
-                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_auto_assign: s.can_auto_assign === false }).eq('id', s.id); refresh(); }}>
-                          {s.can_auto_assign === false ? 'Auto-assign: Off' : 'Auto-assign: On'}
-                        </button>
-                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_view_dispatch_success_rate: !s.can_view_dispatch_success_rate }).eq('id', s.id); refresh(); }}>
-                          {s.can_view_dispatch_success_rate ? 'Dispatch stats: On' : 'Dispatch stats: Off'}
-                        </button>
-                        <button className="btn" onClick={async () => { await supabase.from('profiles').update({ can_auto_approve_upsell: !s.can_auto_approve_upsell }).eq('id', s.id); refresh(); }}>
-                          {s.can_auto_approve_upsell ? 'Auto-approve upsells: On' : 'Auto-approve upsells: Off'}
-                        </button>
-                      </>
-                    )}
                     <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'Receiving orders: On' : 'Receiving orders: Off'}</button>
                     <button className="btn" style={{ color: '#B0483F' }} onClick={() => setConfirmDeleteId(s.id)}>Delete</button>
                   </>
@@ -2103,76 +2069,436 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh }) {
         {status && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{status}</p>}
       </div>
 
-      {editingAccess && (
-        <div className="overlay" onClick={() => setEditingAccess(null)}>
-          <EditAccessModal person={editingAccess} products={products} onClose={() => setEditingAccess(null)} onSave={saveAccess} />
-        </div>
-      )}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
     </div>
   );
 }
 
-function EditAccessModal({ person, products, onClose, onSave }) {
-  const [productList, setProductList] = useState(person.allowed_products || []);
-  const [sectionList, setSectionList] = useState(person.allowed_sections || []);
-  const [canCreateOrders, setCanCreateOrders] = useState(person.can_create_orders !== false);
-  const [allowedStatuses, setAllowedStatuses] = useState(person.allowed_statuses || []);
-  const isSubmitter = ['manager', 'logistics', 'marketer'].includes(person.role);
-  const isStaff = person.role === 'staff';
-  function toggleProduct(id) { setProductList(productList.includes(id) ? productList.filter(x => x !== id) : [...productList, id]); }
-  function toggleSection(key) { setSectionList(sectionList.includes(key) ? sectionList.filter(x => x !== key) : [...sectionList, key]); }
-  function toggleStatus(s) { setAllowedStatuses(allowedStatuses.includes(s) ? allowedStatuses.filter(x => x !== s) : [...allowedStatuses, s]); }
-  return (
-    <div className="modal" onClick={e => e.stopPropagation()}>
-      <h3>Access · {person.full_name}</h3>
-      {isSubmitter && (
-        <>
-          <label style={{ marginTop: 0 }}>Product access</label>
-          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
-            {products.map(p => (
-              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
-                <input type="checkbox" checked={productList.includes(p.id)} onChange={() => toggleProduct(p.id)} />
-                {p.name}
-              </label>
-            ))}
-          </div>
-          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to give access to every product.</p>
-        </>
-      )}
-      {isStaff && (
-        <>
-          <label style={{ marginTop: isSubmitter ? '14px' : 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            Can create new orders
-            <span><input type="checkbox" checked={canCreateOrders} onChange={e => setCanCreateOrders(e.target.checked)} /></span>
-          </label>
-          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>Turn off to stop this staff member from adding new orders — they can still work with orders assigned to them.</p>
+// ---------------------------------------------------------------------
+// Permissions — one place to see and set everything staff/dispatch/etc.
+// are allowed to do: a default per role, plus per-person overrides.
+// ---------------------------------------------------------------------
 
-          <label style={{ marginTop: '14px' }}>Which statuses can they set an order to?</label>
-          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+const PERMISSION_ROLE_TABS = [
+  { key: 'staff', label: 'Staff' },
+  { key: 'dispatch', label: 'Dispatch' },
+  { key: 'manager', label: 'Manager' },
+  { key: 'logistics', label: 'Logistics' },
+  { key: 'marketer', label: 'Marketer' },
+  { key: 'inventory', label: 'Inventory' },
+];
+
+const BOOL_PERMISSION_META = {
+  can_create_orders: { label: 'Can create new orders', roles: ['staff'] },
+  can_upsell: { label: 'Can offer upsells', roles: ['staff'] },
+  can_auto_assign: { label: 'Their confirmed orders are eligible for auto-assignment to dispatch', roles: ['staff'] },
+  can_view_dispatch_success_rate: { label: 'Can view dispatch success rates', roles: ['staff'] },
+  can_auto_approve_upsell: { label: 'Can auto-approve their own upsell commission', roles: ['staff'] },
+};
+
+function rolePermFields(role) {
+  return {
+    bools: Object.keys(BOOL_PERMISSION_META).filter(k => BOOL_PERMISSION_META[k].roles.includes(role)),
+    hasStatuses: role === 'staff',
+    hasProducts: ['manager', 'logistics', 'marketer'].includes(role),
+  };
+}
+
+function PermissionsPage({ profiles, products, roleDefaults, focusPersonId, onFocusConsumed, refresh }) {
+  const [activeRole, setActiveRole] = useState('staff');
+  const [editingPerson, setEditingPerson] = useState(null);
+  const [sources, setSources] = useState([]);
+  const [commissionRules, setCommissionRules] = useState([]);
+  const [productSetNames, setProductSetNames] = useState([]);
+  const [freeRule, setFreeRule] = useState(null);
+  const [statePrefs, setStatePrefs] = useState({});
+
+  async function loadEligibility() {
+    const [{ data: srcs }, { data: rules }, { data: sets }, { data: free }, { data: prefs }] = await Promise.all([
+      supabase.from('landing_page_sources').select('id,name,eligible_staff'),
+      supabase.from('commission_rules').select('id,product_id,set_id,eligible_staff'),
+      supabase.from('product_sets').select('id,name'),
+      supabase.from('free_commission_rules').select('id,eligible_staff').limit(1).maybeSingle(),
+      supabase.from('state_dispatch_preference').select('*'),
+    ]);
+    setSources(srcs || []);
+    setCommissionRules(rules || []);
+    setProductSetNames(sets || []);
+    setFreeRule(free || null);
+    const map = {};
+    (prefs || []).forEach(r => { map[r.state] = r; });
+    setStatePrefs(map);
+  }
+  useEffect(() => { loadEligibility(); }, []);
+
+  const commissionRuleRows = commissionRules.map(r => ({
+    ...r,
+    name: r.product_id
+      ? (products.find(p => p.id === r.product_id)?.name || 'Unknown product')
+      : (productSetNames.find(s => s.id === r.set_id)?.name || 'Unknown set') + ' (set)',
+  }));
+
+  async function toggleEligibility(table, row, personId) {
+    const current = row.eligible_staff || [];
+    const next = current.includes(personId) ? current.filter(x => x !== personId) : [...current, personId];
+    await supabase.from(table).update({ eligible_staff: next.length > 0 ? next : null }).eq('id', row.id);
+    loadEligibility();
+  }
+
+  useEffect(() => {
+    if (!focusPersonId) return;
+    const person = profiles.find(p => p.id === focusPersonId);
+    if (person) {
+      setActiveRole(person.role);
+      setEditingPerson(person);
+    }
+    if (onFocusConsumed) onFocusConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusPersonId]);
+
+  async function setAsAutoAssign(agent) {
+    if (!agent.state) { alert('This dispatch partner needs a state set first — set it on the Team page, then try again.'); return; }
+    await supabase.from('state_dispatch_preference').upsert({
+      state: agent.state, dispatch_id: agent.id, active: true, assignment_mode: 'preferred', updated_at: new Date().toISOString(),
+    });
+    loadEligibility();
+  }
+  async function clearAutoAssign(agent) {
+    await supabase.from('state_dispatch_preference').update({ active: false }).eq('state', agent.state);
+    loadEligibility();
+  }
+
+  async function saveRoleDefaults(patch) {
+    await supabase.from('role_permission_defaults').update(patch).eq('role', activeRole);
+    refresh();
+  }
+
+  async function savePerson(id, patch) {
+    await supabase.from('profiles').update(patch).eq('id', id);
+    setEditingPerson(null);
+    refresh();
+  }
+
+  function eligibilityFor(personId) {
+    const srcNames = sources.filter(s => s.eligible_staff && s.eligible_staff.includes(personId)).map(s => s.name);
+    const ruleCount = commissionRules.filter(r => r.eligible_staff && r.eligible_staff.includes(personId)).length;
+    const inFree = !!(freeRule && freeRule.eligible_staff && freeRule.eligible_staff.includes(personId));
+    return { srcNames, ruleCount, inFree };
+  }
+
+  const people = profiles.filter(p => p.role === activeRole);
+  const defaults = roleDefaults[activeRole] || {};
+  const fields = rolePermFields(activeRole);
+  const roleLabelText = activeRole === 'dispatch' ? 'dispatch partner' : activeRole;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Permissions</h1><p className="page-sub">Set a default for each role once, then override an individual person only when they need something different.</p></div></div>
+
+      <div className="product-tabs">
+        {PERMISSION_ROLE_TABS.map(t => (
+          <span key={t.key} className={'ptab' + (activeRole === t.key ? ' active' : '')} onClick={() => setActiveRole(t.key)}>
+            {t.label} ({profiles.filter(p => p.role === t.key).length})
+          </span>
+        ))}
+      </div>
+
+      <RoleDefaultsCard key={activeRole} role={activeRole} roleLabelText={roleLabelText} defaults={defaults} fields={fields} products={products} onSave={saveRoleDefaults} />
+
+      <h3 style={{ marginTop: '24px', marginBottom: '8px' }}>Individual overrides</h3>
+      <div className="list-manage">
+        {people.map(p => {
+          const elig = eligibilityFor(p.id);
+          const overrideCount = OVERRIDABLE_BOOL_KEYS.filter(k => p[k] !== null && p[k] !== undefined).length
+            + OVERRIDABLE_ARRAY_KEYS.filter(k => p[k] !== null && p[k] !== undefined).length;
+          const extras = [];
+          if (elig.ruleCount > 0) extras.push(`eligible for ${elig.ruleCount} commission rule${elig.ruleCount > 1 ? 's' : ''}`);
+          if (elig.inFree) extras.push('eligible for free-item bonus');
+          if (elig.srcNames.length > 0) extras.push(`restricted order source${elig.srcNames.length > 1 ? 's' : ''}: ${elig.srcNames.join(', ')}`);
+          return (
+            <div key={p.id} className="list-manage-row">
+              <span>
+                <strong>{p.full_name}</strong>
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
+                  {overrideCount > 0 ? `${overrideCount} custom override${overrideCount > 1 ? 's' : ''}` : 'using role defaults'}
+                  {extras.length > 0 ? ' · ' + extras.join(' · ') : ''}
+                </span>
+              </span>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {activeRole === 'dispatch' && (
+                  statePrefs[p.state]?.dispatch_id === p.id && statePrefs[p.state]?.active ? (
+                    <button className="btn" style={{ background: '#EAF4F1', color: '#1F4D44' }} onClick={() => clearAutoAssign(p)}>Auto-assign: ON — turn off</button>
+                  ) : (
+                    <button className="link-btn" onClick={() => setAsAutoAssign(p)}>Set as auto-assign for {p.state || 'their state'}</button>
+                  )
+                )}
+                <button className="link-btn" onClick={() => setEditingPerson(p)}>Edit overrides</button>
+              </div>
+            </div>
+          );
+        })}
+        {people.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No one in this role yet — add one from the Team page.</div>}
+      </div>
+
+      {editingPerson && (
+        <div className="overlay" onClick={() => setEditingPerson(null)}>
+          <PersonOverrideModal
+            person={editingPerson}
+            defaults={roleDefaults[editingPerson.role] || {}}
+            fields={rolePermFields(editingPerson.role)}
+            products={products}
+            commissionRules={commissionRuleRows}
+            sources={sources}
+            freeRule={freeRule}
+            onToggleEligibility={toggleEligibility}
+            onClose={() => setEditingPerson(null)}
+            onSave={savePerson}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoleDefaultsCard({ role, roleLabelText, defaults, fields, products, onSave }) {
+  const [bools, setBools] = useState({});
+  const [statuses, setStatuses] = useState([]);
+  const [sections, setSections] = useState([]);
+  const [productList, setProductList] = useState([]);
+  const [saved, setSaved] = useState('');
+
+  useEffect(() => {
+    setBools({
+      can_create_orders: defaults.can_create_orders !== false,
+      can_upsell: defaults.can_upsell !== false,
+      can_auto_assign: defaults.can_auto_assign !== false,
+      can_view_dispatch_success_rate: !!defaults.can_view_dispatch_success_rate,
+      can_auto_approve_upsell: !!defaults.can_auto_approve_upsell,
+    });
+    setStatuses(defaults.allowed_statuses || []);
+    setSections(defaults.allowed_sections || []);
+    setProductList(defaults.allowed_products || []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role]);
+
+  function toggleIn(id, list, setList) {
+    setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+  }
+
+  async function save() {
+    await onSave({
+      can_create_orders: bools.can_create_orders,
+      can_upsell: bools.can_upsell,
+      can_auto_assign: bools.can_auto_assign,
+      can_view_dispatch_success_rate: bools.can_view_dispatch_success_rate,
+      can_auto_approve_upsell: bools.can_auto_approve_upsell,
+      allowed_statuses: fields.hasStatuses ? (statuses.length > 0 ? statuses : null) : defaults.allowed_statuses,
+      allowed_sections: sections.length > 0 ? sections : null,
+      allowed_products: fields.hasProducts ? (productList.length > 0 ? productList : null) : defaults.allowed_products,
+    });
+    setSaved('✓ Saved — applies to everyone using the default.');
+    setTimeout(() => setSaved(''), 2500);
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', marginBottom: '18px' }}>
+      <h3 style={{ marginTop: 0 }}>Default for every {roleLabelText}</h3>
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>Applies to anyone in this role who doesn't have a personal override below.</p>
+
+      {fields.bools.map(key => (
+        <label key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+          {BOOL_PERMISSION_META[key].label}
+          <input type="checkbox" checked={!!bools[key]} onChange={e => setBools({ ...bools, [key]: e.target.checked })} />
+        </label>
+      ))}
+
+      {fields.hasStatuses && (
+        <>
+          <label className="field-label">Which statuses can they set an order to?</label>
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto', marginBottom: '6px' }}>
             {STATUSES.map(s => (
               <label key={s} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
-                <input type="checkbox" checked={allowedStatuses.includes(s)} onChange={() => toggleStatus(s)} />
+                <input type="checkbox" checked={statuses.includes(s)} onChange={() => toggleIn(s, statuses, setStatuses)} />
                 {s}
               </label>
             ))}
           </div>
-          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave all unchecked to allow every status (New still can't be re-selected once confirmed).</p>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: 0, marginBottom: '12px' }}>Leave all unchecked to allow every status.</p>
         </>
       )}
-      <label style={{ marginTop: (isSubmitter || isStaff) ? '14px' : 0 }}>Extra section access</label>
-      <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+
+      {fields.hasProducts && (
+        <>
+          <label className="field-label">Which products can they submit orders for?</label>
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto', marginBottom: '6px' }}>
+            {products.map(p => (
+              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                <input type="checkbox" checked={productList.includes(p.id)} onChange={() => toggleIn(p.id, productList, setProductList)} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: 0, marginBottom: '12px' }}>Leave all unchecked to give access to every product.</p>
+        </>
+      )}
+
+      <label className="field-label">Extra section access</label>
+      <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto', marginBottom: '6px' }}>
         {APP_SECTIONS.map(sec => (
-          <label key={sec.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '5px 2px' }}>
-            <input type="checkbox" checked={sectionList.includes(sec.key)} onChange={() => toggleSection(sec.key)} />
+          <label key={sec.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+            <input type="checkbox" checked={sections.includes(sec.key)} onChange={() => toggleIn(sec.key, sections, setSections)} />
             {sec.label}
           </label>
         ))}
       </div>
-      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '6px' }}>Leave unchecked for their role's normal default access.</p>
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: 0, marginBottom: '12px' }}>Leave unchecked for the normal default access for this role.</p>
+
+      <button className="btn primary" onClick={save}>Save defaults for {roleLabelText}</button>
+      {saved && <span style={{ fontSize: '12px', color: '#1F4D44', marginLeft: '10px' }}>{saved}</span>}
+    </div>
+  );
+}
+
+function ArrayOverrideField({ label, mode, setMode, list, setList, options, defaultPreview }) {
+  function toggle(id) { setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]); }
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <label className="field-label" style={{ marginTop: 0 }}>{label}</label>
+      <select value={mode} onChange={e => setMode(e.target.value)} style={{ width: '100%', padding: '7px 9px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '6px' }}>
+        <option value="default">Use role default ({defaultPreview})</option>
+        <option value="all">Unrestricted — just for this person</option>
+        <option value="custom">Custom selection — just for this person</option>
+      </select>
+      {mode === 'custom' && (
+        <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '140px', overflowY: 'auto' }}>
+          {options.map(o => (
+            <label key={o.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+              <input type="checkbox" checked={list.includes(o.key)} onChange={() => toggle(o.key)} />
+              {o.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PersonOverrideModal({ person, defaults, fields, products, commissionRules, sources, freeRule, onToggleEligibility, onClose, onSave }) {
+  const [bools, setBools] = useState(() => {
+    const b = {};
+    OVERRIDABLE_BOOL_KEYS.forEach(k => { b[k] = (person[k] === null || person[k] === undefined) ? 'default' : (person[k] ? 'on' : 'off'); });
+    return b;
+  });
+  const [statusMode, setStatusMode] = useState(person.allowed_statuses == null ? 'default' : (person.allowed_statuses.length === 0 ? 'all' : 'custom'));
+  const [statusList, setStatusList] = useState(person.allowed_statuses || []);
+  const [sectionMode, setSectionMode] = useState(person.allowed_sections == null ? 'default' : (person.allowed_sections.length === 0 ? 'all' : 'custom'));
+  const [sectionList, setSectionList] = useState(person.allowed_sections || []);
+  const [productMode, setProductMode] = useState(person.allowed_products == null ? 'default' : (person.allowed_products.length === 0 ? 'all' : 'custom'));
+  const [productListState, setProductListState] = useState(person.allowed_products || []);
+
+  function arrayFromMode(mode, list) {
+    if (mode === 'default') return null;
+    if (mode === 'all') return [];
+    return list;
+  }
+
+  async function save() {
+    const patch = {};
+    OVERRIDABLE_BOOL_KEYS.forEach(k => { patch[k] = bools[k] === 'default' ? null : bools[k] === 'on'; });
+    patch.allowed_statuses = fields.hasStatuses ? arrayFromMode(statusMode, statusList) : person.allowed_statuses;
+    patch.allowed_sections = arrayFromMode(sectionMode, sectionList);
+    patch.allowed_products = fields.hasProducts ? arrayFromMode(productMode, productListState) : person.allowed_products;
+    await onSave(person.id, patch);
+  }
+
+  return (
+    <div className="modal" onClick={e => e.stopPropagation()}>
+      <h3>Permissions · {person.full_name}</h3>
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>Only change something here if this person needs to be different from the {person.role} default.</p>
+
+      {fields.bools.map(key => (
+        <div key={key} style={{ marginBottom: '10px' }}>
+          <label className="field-label" style={{ marginTop: 0 }}>{BOOL_PERMISSION_META[key].label}</label>
+          <select value={bools[key]} onChange={e => setBools({ ...bools, [key]: e.target.value })} style={{ width: '100%', padding: '7px 9px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+            <option value="default">Use role default (currently {defaults[key] ? 'On' : 'Off'})</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+      ))}
+
+      {fields.hasStatuses && (
+        <ArrayOverrideField
+          label="Which statuses can they set an order to?"
+          mode={statusMode} setMode={setStatusMode} list={statusList} setList={setStatusList}
+          options={STATUSES.map(s => ({ key: s, label: s }))}
+          defaultPreview={(defaults.allowed_statuses && defaults.allowed_statuses.length > 0) ? defaults.allowed_statuses.join(', ') : 'all statuses'}
+        />
+      )}
+
+      {fields.hasProducts && (
+        <ArrayOverrideField
+          label="Which products can they submit orders for?"
+          mode={productMode} setMode={setProductMode} list={productListState} setList={setProductListState}
+          options={products.map(p => ({ key: p.id, label: p.name }))}
+          defaultPreview={(defaults.allowed_products && defaults.allowed_products.length > 0) ? `${defaults.allowed_products.length} selected` : 'all products'}
+        />
+      )}
+
+      <ArrayOverrideField
+        label="Extra section access"
+        mode={sectionMode} setMode={setSectionMode} list={sectionList} setList={setSectionList}
+        options={APP_SECTIONS}
+        defaultPreview={(defaults.allowed_sections && defaults.allowed_sections.length > 0) ? defaults.allowed_sections.join(', ') : 'no extra sections'}
+      />
+
+      {person.role === 'staff' && (commissionRules?.length > 0 || sources?.length > 0 || freeRule) && (
+        <div style={{ marginTop: '4px', marginBottom: '4px' }}>
+          <label className="field-label" style={{ marginTop: 0 }}>Where this person is individually eligible</label>
+          <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-2px', marginBottom: '6px' }}>
+            These come from Commission Rules and Order Sources elsewhere in the app — shown and toggleable here so you don't have to go hunting for them. Unchecking the last restricted person on a rule opens it back up to all staff.
+          </p>
+          <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+            {commissionRules?.map(r => (
+              <label key={'rule-' + r.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                <input
+                  type="checkbox"
+                  checked={!r.eligible_staff || r.eligible_staff.length === 0 || r.eligible_staff.includes(person.id)}
+                  onChange={() => onToggleEligibility('commission_rules', r, person.id)}
+                />
+                Commission · {r.name}
+                {r.eligible_staff && r.eligible_staff.length > 0 && <span style={{ color: '#8A93A0' }}> (restricted)</span>}
+              </label>
+            ))}
+            {freeRule && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                <input
+                  type="checkbox"
+                  checked={!freeRule.eligible_staff || freeRule.eligible_staff.length === 0 || freeRule.eligible_staff.includes(person.id)}
+                  onChange={() => onToggleEligibility('free_commission_rules', freeRule, person.id)}
+                />
+                Free-item bonus
+                {freeRule.eligible_staff && freeRule.eligible_staff.length > 0 && <span style={{ color: '#8A93A0' }}> (restricted)</span>}
+              </label>
+            )}
+            {sources?.map(s => (
+              <label key={'src-' + s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
+                <input
+                  type="checkbox"
+                  checked={!s.eligible_staff || s.eligible_staff.length === 0 || s.eligible_staff.includes(person.id)}
+                  onChange={() => onToggleEligibility('landing_page_sources', s, person.id)}
+                />
+                Order source · {s.name}
+                {s.eligible_staff && s.eligible_staff.length > 0 && <span style={{ color: '#8A93A0' }}> (restricted)</span>}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="modal-actions">
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={() => onSave(person.id, productList, sectionList, canCreateOrders, allowedStatuses)}>Save access</button>
+        <button className="btn primary" onClick={save}>Save</button>
       </div>
     </div>
   );
