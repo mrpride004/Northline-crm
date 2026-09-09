@@ -7,19 +7,21 @@ const supabaseAdmin = createClient(
 );
 
 // Public endpoint — authenticated by api_key (per landing page), not a user session.
-// Called by Zapier/Make/Pabbly whenever a WordPress form is submitted.
+// Called by Zapier/Make/Pabbly/WP Webhooks whenever a WordPress form is submitted.
 export async function POST(request) {
   let body;
   try {
     body = await request.json();
   } catch (e) {
-    return NextResponse.json({ success: false, error: 'Invalid JSON body.' }, { status: 400 });
+    body = {};
   }
 
-  const { api_key, customer, phone, phone2, address, state, selected_option, quantity, notes } = body;
+  const url = new URL(request.url);
+  const api_key = body.api_key || url.searchParams.get('api_key');
+  const { customer, phone, phone2, address, state, selected_option, quantity, notes } = body;
 
   if (!api_key) return NextResponse.json({ success: false, error: 'Missing api_key.' }, { status: 401 });
-  if (!customer || !phone) return NextResponse.json({ success: false, error: 'customer and phone are required.' }, { status: 400 });
+  if (!customer || !phone) return NextResponse.json({ success: false, error: 'customer and phone are required.', received: body }, { status: 400 });
 
   const { data: source, error: sourceError } = await supabaseAdmin
     .from('landing_page_sources')
