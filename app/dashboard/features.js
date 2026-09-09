@@ -161,8 +161,11 @@ export function getCycleStart(date) {
 }
 
 export async function recordCommissionForOrder(order) {
-  if (!order.staff_id || !order.product_id) return;
-  const { data: rule } = await supabase.from('commission_rules').select('*').eq('product_id', order.product_id).maybeSingle();
+  if (!order.staff_id) return;
+  if (!order.product_id && !order.set_id) return;
+  const { data: rule } = order.set_id
+    ? await supabase.from('commission_rules').select('*').eq('set_id', order.set_id).maybeSingle()
+    : await supabase.from('commission_rules').select('*').eq('product_id', order.product_id).maybeSingle();
   if (!rule) return;
   const isEligible = !rule.eligible_staff || rule.eligible_staff.length === 0 || rule.eligible_staff.includes(order.staff_id);
   if (!isEligible) return;
@@ -1324,6 +1327,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
             <span>
               {s.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {(products.find(p => p.id === s.product_id) || {}).name || '—'} · {s.total_orders_received || 0} orders received{s.last_used_at ? ` · last: ${new Date(s.last_used_at).toLocaleDateString()}` : ''}</span>
               {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Off</span>}
+              {s.eligible_staff && s.eligible_staff.length > 0 && <span className="pill Preparing" style={{ marginLeft: '8px' }}>Restricted to {s.eligible_staff.length} staff</span>}
             </span>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button className="link-btn" onClick={() => setEditingSource(s)}>Manage</button>
@@ -1441,7 +1445,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
       </div>
       {editingSource && (
         <OrderSourceModal
-          source={editingSource} products={products} productSets={productSets}
+          source={editingSource} products={products} productSets={productSets} profiles={profiles}
           onClose={() => { setEditingSource(null); loadOrderSources(); }}
         />
       )}
@@ -1536,7 +1540,13 @@ function SubmitOrderForm({ profile, products, refresh }) {
 }
 
 // ---------- Product packages (multiple named gift bundles per product) ----------
-export function CommissionRuleModal({ product, profiles, onClose }) {
+export function CommissionRuleModal({ product, set, profiles, onClose }) {
+  // Either a product or a set — set_id and product_id are mutually exclusive
+  // on commission_rules, mirroring how orders themselves work.
+  const isSet = !product && !!set;
+  const targetName = isSet ? set.name : product.name;
+  const conflictColumn = isSet ? 'set_id' : 'product_id';
+
   const [standardActive, setStandardActive] = useState(true);
   const [standardType, setStandardType] = useState('fixed');
   const [standardValue, setStandardValue] = useState(0);
@@ -1550,7 +1560,7 @@ export function CommissionRuleModal({ product, profiles, onClose }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const { data } = await supabase.from('commission_rules').select('*').eq('product_id', product.id).maybeSingle();
+    const { data } = await supabase.from('commission_rules').select('*').eq(conflictColumn, isSet ? set.id : product.id).maybeSingle();
     if (data) {
       setStandardActive(data.standard_active); setStandardType(data.standard_type); setStandardValue(data.standard_value);
       setUpsellActive(data.upsell_active); setUpsellType(data.upsell_type); setUpsellValue(data.upsell_value);
@@ -1565,19 +1575,20 @@ export function CommissionRuleModal({ product, profiles, onClose }) {
 
   async function save() {
     const payload = {
-      product_id: product.id,
+      product_id: isSet ? null : product.id,
+      set_id: isSet ? set.id : null,
       standard_active: standardActive, standard_type: standardType, standard_value: parseFloat(standardValue) || 0,
       upsell_active: upsellActive, upsell_type: upsellType, upsell_value: parseFloat(upsellValue) || 0,
       eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
     };
-    await supabase.from('commission_rules').upsert(payload, { onConflict: 'product_id' });
+    await supabase.from('commission_rules').upsert(payload, { onConflict: conflictColumn });
     onClose();
   }
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>Commission · {product.name}</h3>
+        <h3>Commission · {targetName}</h3>
         {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
           <>
             <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '0', marginBottom: '14px' }}>
@@ -1587,7 +1598,7 @@ export function CommissionRuleModal({ product, profiles, onClose }) {
                   <input type="checkbox" checked={standardActive} onChange={e => setStandardActive(e.target.checked)} /> On
                 </span>
               </label>
-              <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>Earned on every Paid order for this product.</p>
+              <p style={{ fontSize: '11px', color: '#8A93A0', margin: '4px 0 10px' }}>Earned on every Paid order for this {isSet ? 'set' : 'product'}.</p>
               <div className="row2">
                 <select value={standardType} onChange={e => setStandardType(e.target.value)} disabled={!standardActive}>
                   <option value="fixed">Fixed ₦ amount</option>
@@ -1614,7 +1625,7 @@ export function CommissionRuleModal({ product, profiles, onClose }) {
               </div>
             </div>
 
-            <label style={{ marginTop: 0 }}>Which staff can earn this? (for this product)</label>
+            <label style={{ marginTop: 0 }}>Which staff can earn this? (for this {isSet ? 'set' : 'product'})</label>
             <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto' }}>
               {staffList.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No staff added yet.</p>}
               {staffList.map(s => (
@@ -3351,10 +3362,11 @@ export function MessagesPage({ profile }) {
 }
 
 // ---------- Product Sets: bundle multiple distinct products as one sellable unit ----------
-export function ProductSetsPage({ products, refresh }) {
+export function ProductSetsPage({ products, profiles, refresh }) {
   const [sets, setSets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
+  const [managingCommission, setManagingCommission] = useState(null);
 
   useEffect(() => { load(); }, []);
   async function load() {
@@ -3398,6 +3410,7 @@ export function ProductSetsPage({ products, refresh }) {
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="link-btn" onClick={() => setEditing(s)}>Edit</button>
+                <button className="link-btn" onClick={() => setManagingCommission(s)}>Standard & upsell commission</button>
                 <button className="btn" onClick={() => toggleActive(s)}>{s.active ? 'On — turn off' : 'Off — turn on'}</button>
               </div>
             </div>
@@ -3405,6 +3418,7 @@ export function ProductSetsPage({ products, refresh }) {
         </div>
       )}
       {editing && <ProductSetModal set={editing} products={products} onClose={() => { setEditing(null); load(); refresh && refresh(); }} />}
+      {managingCommission && <CommissionRuleModal set={managingCommission} profiles={profiles} onClose={() => setManagingCommission(null)} />}
     </div>
   );
 }
@@ -3687,11 +3701,16 @@ export function NotificationsPage({ profile }) {
 }
 
 // ---------- Landing page order source (Zapier/Make webhook intake) ----------
-function OrderSourceModal({ source, products, productSets, onClose }) {
+function OrderSourceModal({ source, products, productSets, profiles, onClose }) {
   const isNew = !source.id;
   const [name, setName] = useState(source.name || '');
   const [productId, setProductId] = useState(source.product_id || '');
   const [defaultState, setDefaultState] = useState(source.default_state || '');
+  const [eligibleStaff, setEligibleStaff] = useState(source.eligible_staff || []);
+  const staffList = (profiles || []).filter(p => p.role === 'staff');
+  function toggleEligibleStaff(id) {
+    setEligibleStaff(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
   const [options, setOptions] = useState(() => {
     const entries = Object.entries(source.option_mapping || {});
     if (entries.length === 0) return [{ label: '', targetType: 'package', packageId: '', setId: '' }];
@@ -3736,6 +3755,7 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
       name: name.trim(), product_id: productId || null, option_mapping: mapping,
       default_state: defaultState || null, api_key: apiKey, active: true,
       field_mapping: showFieldMapping ? cleanedMapping : {},
+      eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
     };
     const { error } = isNew
       ? await supabase.from('landing_page_sources').insert(payload)
@@ -3869,6 +3889,23 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
                   style={{ width: '100%', padding: '6px 9px', border: '1px solid #DEDAD0', borderRadius: '4px', fontSize: '12px' }}
                 />
               </div>
+            ))}
+          </div>
+        )}
+
+        <label style={{ marginTop: '16px' }}>Which staff can see new orders from this page?</label>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-4px', marginBottom: '8px' }}>
+          New orders from this landing page arrive unassigned. Leave everyone unchecked to let any staff member see and claim them (default, unchanged behavior). Check specific staff to limit who can see and claim these incoming orders.
+        </p>
+        {staffList.length === 0 ? (
+          <p style={{ fontSize: '11.5px', color: '#8A93A0' }}>No staff logins yet — add staff under Team first.</p>
+        ) : (
+          <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '10px 12px', marginBottom: '4px', maxHeight: '150px', overflowY: 'auto' }}>
+            {staffList.map(p => (
+              <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px', fontWeight: 'normal', padding: '4px 0' }}>
+                <input type="checkbox" checked={eligibleStaff.includes(p.id)} onChange={() => toggleEligibleStaff(p.id)} />
+                {p.full_name}
+              </label>
             ))}
           </div>
         )}

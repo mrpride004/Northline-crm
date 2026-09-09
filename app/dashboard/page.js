@@ -911,45 +911,53 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
   async function updateOrder(id, patch, meta, remark) {
     const current = orders.find(o => o.id === id);
-    if (patch.status && current && patch.status !== current.status) {
-      patch.status_updated_at = new Date().toISOString();
-    }
-    if (patch.status === 'Delivered') {
-      patch.delivered_at = new Date().toISOString();
-      if (current && current.status !== 'Delivered') await adjustStockForOrder(current, -1);
-    }
-    if (patch.status === 'Cancelled' && current && current.status === 'Delivered') {
-      await adjustStockForOrder(current, 1);
-    }
-    const { error: updateError } = await supabase.from('orders').update(patch).eq('id', id);
-    if (updateError) { alert('Unable to update this order. Please try again.'); return; }
-    if (patch.status && current && patch.status !== current.status) {
-      await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
-      if (patch.status === 'Cancelled' && current.status === 'Delivered') {
-        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Order reversed from Delivered — stock added back to inventory.' });
+    // Wrapped so an unexpected failure always shows a message and always
+    // refreshes, instead of leaving the screen looking stuck with no feedback.
+    try {
+      if (patch.status && current && patch.status !== current.status) {
+        patch.status_updated_at = new Date().toISOString();
       }
-    }
-    if (remark && remark.trim()) {
-      await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
-    }
-    if (meta === 'assigned') {
-      await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
-      const newlyAssigned = [patch.staff_id, patch.dispatch_id].filter(pid => pid && pid !== current?.staff_id && pid !== current?.dispatch_id);
-      if (newlyAssigned.length > 0) {
-        notifyUsers(session, {
-          userIds: newlyAssigned, type: 'order_assigned', title: 'Order assigned to you', body: current ? current.customer : 'An order was just assigned to you.',
-          orderId: id,
-        });
+      if (patch.status === 'Delivered') {
+        patch.delivered_at = new Date().toISOString();
+        if (current && current.status !== 'Delivered') await adjustStockForOrder(current, -1);
       }
+      if (patch.status === 'Cancelled' && current && current.status === 'Delivered') {
+        await adjustStockForOrder(current, 1);
+      }
+      const { error: updateError } = await supabase.from('orders').update(patch).eq('id', id);
+      if (updateError) { alert('Unable to update this order. Please try again.\n\n' + updateError.message); return; }
+      if (patch.status && current && patch.status !== current.status) {
+        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
+        if (patch.status === 'Cancelled' && current.status === 'Delivered') {
+          await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Order reversed from Delivered — stock added back to inventory.' });
+        }
+      }
+      if (remark && remark.trim()) {
+        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
+      }
+      if (meta === 'assigned') {
+        await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: 'Assignment updated' });
+        const newlyAssigned = [patch.staff_id, patch.dispatch_id].filter(pid => pid && pid !== current?.staff_id && pid !== current?.dispatch_id);
+        if (newlyAssigned.length > 0) {
+          notifyUsers(session, {
+            userIds: newlyAssigned, type: 'order_assigned', title: 'Order assigned to you', body: current ? current.customer : 'An order was just assigned to you.',
+            orderId: id,
+          });
+        }
+      }
+      if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
+        await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
+        await recordFreeCommissionForOrder({ id });
+      }
+      if (patch.status === 'Cancelled') {
+        await supabase.rpc('cancel_upsells_for_order', { p_order_id: id });
+      }
+    } catch (e) {
+      console.error('[updateOrder] unexpected error:', e);
+      alert('Something went wrong updating this order. Please try again — if it keeps happening, let admin know.\n\n' + (e?.message || e));
+    } finally {
+      refresh();
     }
-    if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
-      await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
-      await recordFreeCommissionForOrder({ id });
-    }
-    if (patch.status === 'Cancelled') {
-      await supabase.rpc('cancel_upsells_for_order', { p_order_id: id });
-    }
-    refresh();
   }
 
   async function markPaid(o) {
@@ -1536,34 +1544,43 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   }
 
   async function applyStatusChange(o, status, { remark, fee, rescheduleDate, paidNow } = {}) {
-    const patch = { status, status_updated_at: new Date().toISOString() };
-    if (status === 'Delivered') {
-      patch.delivered_at = new Date().toISOString();
-      patch.delivery_fee = fee ?? 0;
-      if (paidNow) patch.payment_status = 'Paid';
-      await deductStockForDelivery(o);
+    // Everything below is wrapped so a failure (network blip, RPC error, an
+    // unexpected exception) always surfaces a message and always closes this
+    // modal — instead of leaving the screen looking "stuck" with no feedback.
+    try {
+      const patch = { status, status_updated_at: new Date().toISOString() };
+      if (status === 'Delivered') {
+        patch.delivered_at = new Date().toISOString();
+        patch.delivery_fee = fee ?? 0;
+        if (paidNow) patch.payment_status = 'Paid';
+        await deductStockForDelivery(o);
+      }
+      if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
+      if (status === 'Cancelled' && fee !== undefined && fee !== '') patch.delivery_fee = fee;
+      const { error: updateError } = await supabase.from('orders').update(patch).eq('id', o.id);
+      if (updateError) { alert('Unable to update this order. Please try again.\n\n' + updateError.message); return; }
+      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
+      if (status === 'Delivered' && paidNow) {
+        await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment collected at delivery — marked as Paid.' });
+        await recordCommissionForOrder(o);
+      }
+      if (remark && remark.trim()) {
+        await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
+      }
+      if (status === 'Delivered' || paidNow) {
+        await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
+        await recordFreeCommissionForOrder(o);
+      }
+      if (status === 'Cancelled') {
+        await supabase.rpc('cancel_upsells_for_order', { p_order_id: o.id });
+      }
+    } catch (e) {
+      console.error('[applyStatusChange] unexpected error:', e);
+      alert('Something went wrong updating this order. Please try again — if it keeps happening, let admin know.\n\n' + (e?.message || e));
+    } finally {
+      setStatusChanging(null);
+      refresh();
     }
-    if (status === 'Rescheduled') patch.reschedule_date = rescheduleDate || null;
-    if (status === 'Cancelled' && fee !== undefined && fee !== '') patch.delivery_fee = fee;
-    const { error: updateError } = await supabase.from('orders').update(patch).eq('id', o.id);
-    if (updateError) { alert('Unable to update this order. Please try again.'); return; }
-    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: o.status, to_status: status });
-    if (status === 'Delivered' && paidNow) {
-      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment collected at delivery — marked as Paid.' });
-      await recordCommissionForOrder(o);
-    }
-    if (remark && remark.trim()) {
-      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
-    }
-    if (status === 'Delivered' || paidNow) {
-      await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
-      await recordFreeCommissionForOrder(o);
-    }
-    if (status === 'Cancelled') {
-      await supabase.rpc('cancel_upsells_for_order', { p_order_id: o.id });
-    }
-    setStatusChanging(null);
-    refresh();
   }
 
   async function markPaid(o) {
@@ -1777,7 +1794,7 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
         <span className={'ptab' + (tab === 'sets' ? ' active' : '')} onClick={() => setTab('sets')}>Sets</span>
       </div>
       {tab === 'sets' ? (
-        <ProductSetsPage products={products} refresh={refresh} />
+        <ProductSetsPage products={products} profiles={profiles} refresh={refresh} />
       ) : (
       <>
       <div className="list-manage" style={{ marginBottom: '18px' }}>
