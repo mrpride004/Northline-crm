@@ -1121,7 +1121,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
 }
 
 // ---------- Settings: messaging toggles + external dispatch companies ----------
-export function SettingsPage({ settings, profiles, session, profile, refresh }) {
+export function SettingsPage({ settings, profiles, products, productSets, session, profile, refresh }) {
   const [companies, setCompanies] = useState([]);
   const [name, setName] = useState('');
   const [contactName, setContactName] = useState('');
@@ -1134,6 +1134,18 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
   const [savingPassword, setSavingPassword] = useState(false);
   const [notifyTarget, setNotifyTarget] = useState('all_staff');
   const [historyPersonId, setHistoryPersonId] = useState('');
+  const [orderSources, setOrderSources] = useState([]);
+  const [editingSource, setEditingSource] = useState(null);
+
+  useEffect(() => { loadOrderSources(); }, []);
+  async function loadOrderSources() {
+    const { data } = await supabase.from('landing_page_sources').select('*').order('created_at', { ascending: false });
+    setOrderSources(data || []);
+  }
+  async function toggleSourceActive(s) {
+    await supabase.from('landing_page_sources').update({ active: !s.active }).eq('id', s.id);
+    loadOrderSources();
+  }
   const [historyMessages, setHistoryMessages] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -1301,7 +1313,28 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
         ))}
       </div>
 
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Order confirmation to customers</h3>
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Landing page order sources</h3>
+      <p style={{ fontSize: '12px', color: '#8A93A0', marginBottom: '14px', maxWidth: '600px' }}>
+        Connect an external landing page (via Zapier, Make, or Pabbly) so its form submissions become real orders here automatically — no manual entry, no separate queue. Each source gets its own API key.
+      </p>
+      <div className="list-manage" style={{ marginBottom: '14px' }}>
+        {orderSources.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No landing pages connected yet.</div>}
+        {orderSources.map(s => (
+          <div key={s.id} className="list-manage-row">
+            <span>
+              {s.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {(products.find(p => p.id === s.product_id) || {}).name || '—'} · {s.total_orders_received || 0} orders received{s.last_used_at ? ` · last: ${new Date(s.last_used_at).toLocaleDateString()}` : ''}</span>
+              {!s.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Off</span>}
+            </span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="link-btn" onClick={() => setEditingSource(s)}>Manage</button>
+              <button className="btn" onClick={() => toggleSourceActive(s)}>{s.active ? 'Turn off' : 'Turn on'}</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button className="btn primary" onClick={() => setEditingSource({})} style={{ marginBottom: '22px' }}>+ Connect a new landing page</button>
+
+
       <div className="list-manage" style={{ marginBottom: '22px' }}>
         <div className="list-manage-row">
           <span>Auto-send SMS when a new order is created</span>
@@ -1406,6 +1439,12 @@ export function SettingsPage({ settings, profiles, session, profile, refresh }) 
         </select>
         <button className="btn primary" onClick={addCompany} style={{ width: '100%' }}>Add company</button>
       </div>
+      {editingSource && (
+        <OrderSourceModal
+          source={editingSource} products={products} productSets={productSets}
+          onClose={() => { setEditingSource(null); loadOrderSources(); }}
+        />
+      )}
     </div>
   );
 }
@@ -3644,5 +3683,163 @@ export function NotificationsPage({ profile }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------- Landing page order source (Zapier/Make webhook intake) ----------
+function OrderSourceModal({ source, products, productSets, onClose }) {
+  const isNew = !source.id;
+  const [name, setName] = useState(source.name || '');
+  const [productId, setProductId] = useState(source.product_id || '');
+  const [defaultState, setDefaultState] = useState(source.default_state || '');
+  const [options, setOptions] = useState(() => {
+    const entries = Object.entries(source.option_mapping || {});
+    if (entries.length === 0) return [{ label: '', targetType: 'package', packageId: '', setId: '' }];
+    return entries.map(([label, val]) => ({
+      label,
+      targetType: val.set_id ? 'set' : 'package',
+      packageId: val.package_id || '',
+      setId: val.set_id || '',
+    }));
+  });
+  const [apiKey] = useState(source.api_key || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : String(Date.now())));
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  function addOption() {
+    setOptions([...options, { label: '', targetType: 'package', packageId: '', setId: '' }]);
+  }
+  function updateOption(i, patch) {
+    setOptions(options.map((o, idx) => idx === i ? { ...o, ...patch } : o));
+  }
+  function removeOption(i) {
+    setOptions(options.filter((_, idx) => idx !== i));
+  }
+
+  async function save() {
+    if (!name.trim()) { alert('Give this landing page a name.'); return; }
+    const mapping = {};
+    options.forEach(o => {
+      if (!o.label.trim()) return;
+      if (o.targetType === 'set' && o.setId) mapping[o.label.trim()] = { set_id: o.setId };
+      else if (o.targetType === 'package' && o.packageId) mapping[o.label.trim()] = { package_id: o.packageId };
+    });
+    setSaving(true);
+    const payload = {
+      name: name.trim(), product_id: productId || null, option_mapping: mapping,
+      default_state: defaultState || null, api_key: apiKey, active: true,
+    };
+    if (isNew) {
+      await supabase.from('landing_page_sources').insert(payload);
+    } else {
+      await supabase.from('landing_page_sources').update(payload).eq('id', source.id);
+    }
+    setSaving(false);
+    onClose();
+  }
+
+  const endpointUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/api/order-intake';
+
+  function copyKey() {
+    copyToClipboard(apiKey, 'API key copied');
+    setCopied(true);
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ width: '560px' }} onClick={e => e.stopPropagation()}>
+        <h3>{isNew ? 'Connect a new landing page' : 'Manage landing page'}</h3>
+
+        <label style={{ marginTop: 0 }}>Name (for your own reference)</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Teatree Set — Main Funnel" />
+
+        <label>Base product</label>
+        <select value={productId} onChange={e => setProductId(e.target.value)}>
+          <option value="">— Select product —</option>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+
+        <label>Default delivery state (optional)</label>
+        <select value={defaultState} onChange={e => setDefaultState(e.target.value)}>
+          <option value="">— None, staff picks it at confirmation —</option>
+          {NIGERIA_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        <label style={{ marginTop: '14px' }}>If this page offers a choice of packages/sets</label>
+        <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-4px', marginBottom: '8px' }}>
+          Type the exact text your WordPress form submits for each option (e.g. what a dropdown or radio button's value is), and pick what it means in the CRM. Leave this as one blank row if the page only sells one thing.
+        </p>
+        {options.map((o, i) => {
+          return (
+            <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
+              <input
+                value={o.label} onChange={e => updateOption(i, { label: e.target.value })}
+                placeholder="Option label from the form"
+                style={{ flex: '1 1 140px', padding: '7px 9px', border: '1px solid #DEDAD0', borderRadius: '4px', fontSize: '12.5px' }}
+              />
+              <select value={o.targetType} onChange={e => updateOption(i, { targetType: e.target.value })} style={{ fontSize: '12px', padding: '6px 8px' }}>
+                <option value="package">Package</option>
+                <option value="set">Set</option>
+              </select>
+              {o.targetType === 'set' ? (
+                <select value={o.setId} onChange={e => updateOption(i, { setId: e.target.value })} style={{ fontSize: '12px', padding: '6px 8px', flex: '1 1 140px' }}>
+                  <option value="">— Choose set —</option>
+                  {(productSets || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              ) : (
+                <PackagePicker productId={productId} value={o.packageId} onChange={val => updateOption(i, { packageId: val })} />
+              )}
+              <button className="tiny-x" onClick={() => removeOption(i)}>✕</button>
+            </div>
+          );
+        })}
+        <button className="link-btn" onClick={addOption}>+ Add another option</button>
+
+        {!isNew || apiKey ? (
+          <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '16px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: '#8A93A0', marginBottom: '6px' }}>ZAPIER / MAKE SETUP</div>
+            <div style={{ fontSize: '12.5px', marginBottom: '6px' }}>Send a POST request to:</div>
+            <code style={{ fontSize: '11.5px', display: 'block', background: '#fff', padding: '6px 8px', borderRadius: '4px', marginBottom: '8px', wordBreak: 'break-all' }}>{endpointUrl}</code>
+            <div style={{ fontSize: '12.5px', marginBottom: '4px' }}>With this JSON body (map your form fields to these names):</div>
+            <code style={{ fontSize: '11px', display: 'block', background: '#fff', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
+{`{
+  "api_key": "${apiKey}",
+  "customer": "Customer name",
+  "phone": "080...",
+  "phone2": "080... (optional)",
+  "address": "Delivery address",
+  "state": "Lagos (optional)",
+  "selected_option": "exact option label (if any)",
+  "quantity": 1,
+  "notes": "optional"
+}`}
+            </code>
+            <button className="link-btn" style={{ marginTop: '8px' }} onClick={copyKey}>{copied ? '✓ Copied' : '📋 Copy API key'}</button>
+          </div>
+        ) : null}
+
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PackagePicker({ productId, value, onChange }) {
+  const [packages, setPackages] = useState([]);
+  useEffect(() => {
+    if (!productId) { setPackages([]); return; }
+    (async () => {
+      const { data } = await supabase.from('product_packages').select('*').eq('product_id', productId);
+      setPackages(data || []);
+    })();
+  }, [productId]);
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ fontSize: '12px', padding: '6px 8px', flex: '1 1 140px' }}>
+      <option value="">— Just the product, no package —</option>
+      {packages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
   );
 }

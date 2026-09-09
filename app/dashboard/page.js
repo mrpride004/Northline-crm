@@ -423,7 +423,7 @@ function DashboardInner() {
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
-        {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} session={session} profile={profile} refresh={refreshAll} />}
+        {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} products={products} productSets={productSets} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
         {page === 'notifications' && <NotificationsPage profile={profile} />}
         {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
