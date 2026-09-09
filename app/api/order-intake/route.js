@@ -8,6 +8,13 @@ const supabaseAdmin = createClient(
 
 // Public endpoint — authenticated by api_key (per landing page), not a user session.
 // Called by Zapier/Make/Pabbly/WP Webhooks whenever a WordPress form is submitted.
+
+// Resolves a dot-path like "names.first_name" against a nested object.
+function getPath(obj, path) {
+  if (!path) return undefined;
+  return path.split('.').reduce((acc, key) => (acc && typeof acc === 'object' ? acc[key] : undefined), obj);
+}
+
 export async function POST(request) {
   let body;
   try {
@@ -18,10 +25,7 @@ export async function POST(request) {
 
   const url = new URL(request.url);
   const api_key = body.api_key || url.searchParams.get('api_key');
-  const { customer, phone, phone2, address, state, selected_option, quantity, notes } = body;
-
   if (!api_key) return NextResponse.json({ success: false, error: 'Missing api_key.' }, { status: 401 });
-  if (!customer || !phone) return NextResponse.json({ success: false, error: 'customer and phone are required.', received: body }, { status: 400 });
 
   const { data: source, error: sourceError } = await supabaseAdmin
     .from('landing_page_sources')
@@ -33,6 +37,23 @@ export async function POST(request) {
   if (sourceError || !source) {
     return NextResponse.json({ success: false, error: 'Invalid or inactive api_key.' }, { status: 401 });
   }
+
+  const fieldMapping = source.field_mapping || {};
+  const hasMapping = Object.keys(fieldMapping).length > 0;
+
+  // If this source has a configured raw-field mapping, resolve every value
+  // through it. Otherwise, assume the caller already sent clean field names
+  // (customer, phone, etc.) at the top level — e.g. a hand-built Zapier/Make step.
+  const customer = hasMapping ? getPath(body, fieldMapping.customer) : body.customer;
+  const phone = hasMapping ? getPath(body, fieldMapping.phone) : body.phone;
+  const phone2 = hasMapping ? getPath(body, fieldMapping.phone2) : body.phone2;
+  const address = hasMapping ? getPath(body, fieldMapping.address) : body.address;
+  const state = hasMapping ? getPath(body, fieldMapping.state) : body.state;
+  const selected_option = hasMapping ? getPath(body, fieldMapping.selected_option) : body.selected_option;
+  const quantity = hasMapping ? getPath(body, fieldMapping.quantity) : body.quantity;
+  const notes = hasMapping ? getPath(body, fieldMapping.notes) : body.notes;
+
+  if (!customer || !phone) return NextResponse.json({ success: false, error: 'customer and phone are required.', received: body }, { status: 400 });
 
   // Resolve which package/set this order is for, based on the submitted option label.
   const mapping = source.option_mapping || {};

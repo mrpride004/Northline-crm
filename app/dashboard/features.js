@@ -3703,6 +3703,11 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
     }));
   });
   const [apiKey] = useState(source.api_key || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : String(Date.now())));
+  const [fieldMapping, setFieldMapping] = useState(() => ({
+    customer: '', phone: '', phone2: '', address: '', state: '', selected_option: '',
+    ...(source.field_mapping || {}),
+  }));
+  const [showFieldMapping, setShowFieldMapping] = useState(Object.keys(source.field_mapping || {}).length > 0);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -3725,9 +3730,12 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
       else if (o.targetType === 'package' && o.packageId) mapping[o.label.trim()] = { package_id: o.packageId };
     });
     setSaving(true);
+    const cleanedMapping = {};
+    Object.entries(fieldMapping).forEach(([k, v]) => { if (v && v.trim()) cleanedMapping[k] = v.trim(); });
     const payload = {
       name: name.trim(), product_id: productId || null, option_mapping: mapping,
       default_state: defaultState || null, api_key: apiKey, active: true,
+      field_mapping: showFieldMapping ? cleanedMapping : {},
     };
     if (isNew) {
       await supabase.from('landing_page_sources').insert(payload);
@@ -3794,6 +3802,35 @@ function OrderSourceModal({ source, products, productSets, onClose }) {
           );
         })}
         <button className="link-btn" onClick={addOption}>+ Add another option</button>
+
+        <label style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <input type="checkbox" checked={showFieldMapping} onChange={e => setShowFieldMapping(e.target.checked)} />
+          Advanced: this form sends raw field names (e.g. WP Webhooks free tier, which can't rename fields)
+        </label>
+        {showFieldMapping && (
+          <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '10px' }}>
+            <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: 0, marginBottom: '10px' }}>
+              Tell the CRM where to find each value inside the raw data your form sends. Use dot-notation for nested fields (e.g. names.first_name). Leave a field blank if this form doesn't have it.
+            </p>
+            {[
+              { key: 'customer', label: 'Customer name', placeholder: 'form_data.input_text' },
+              { key: 'phone', label: 'Phone', placeholder: 'form_data.names.first_name' },
+              { key: 'phone2', label: '2nd phone (optional)', placeholder: 'form_data.names.last_name' },
+              { key: 'address', label: 'Address', placeholder: 'form_data.description' },
+              { key: 'state', label: 'State', placeholder: 'form_data.dropdown' },
+              { key: 'selected_option', label: 'Selected package option', placeholder: 'form_data.input_radio2' },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom: '8px' }}>
+                <label className="field-label" style={{ marginTop: 0, fontSize: '11px' }}>{f.label}</label>
+                <input
+                  value={fieldMapping[f.key] || ''} onChange={e => setFieldMapping({ ...fieldMapping, [f.key]: e.target.value })}
+                  placeholder={f.placeholder}
+                  style={{ width: '100%', padding: '6px 9px', border: '1px solid #DEDAD0', borderRadius: '4px', fontSize: '12px' }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
 
         {!isNew || apiKey ? (
           <div style={{ background: '#F6F4EF', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px', marginTop: '16px' }}>
