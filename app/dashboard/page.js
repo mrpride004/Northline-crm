@@ -202,6 +202,19 @@ function DashboardInner() {
         }
         refreshAll();
       })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (payload) => {
+        const o = payload.old;
+        const relevant =
+          o &&
+          (profile.role === 'admin' ||
+            (profile.role === 'staff' && o.staff_id === profile.id) ||
+            (profile.role === 'dispatch' && o.dispatch_id === profile.id));
+        if (relevant && !isEcho()) {
+          showOrderAlert(`🗑️ Order removed — ${o.customer || o.id.slice(0, 8)}${o.state ? ' · ' + o.state : ''}`);
+          playNotificationSound();
+        }
+        refreshAll();
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [profile, session]);
