@@ -266,6 +266,7 @@ export async function POST(request) {
     await logIntake({
       success: true, status_code: 200, source_id: source.id, api_key_used: api_key,
       content_type: contentType, parse_method: parseMethod, resolved_fields: resolvedFields, order_id: order.id,
+      raw_body: rawText, parsed_body: body,
     });
 
     return NextResponse.json({
