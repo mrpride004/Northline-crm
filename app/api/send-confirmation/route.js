@@ -17,9 +17,9 @@ const supabaseAdmin = createClient(
 );
 
 export async function POST(request) {
-  const { phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp } = await request.json();
+  const { phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp, customMessage } = await request.json();
   if (!phone || !orderId) return NextResponse.json({ error: 'Missing phone or orderId.' }, { status: 400 });
 
-  const result = await sendOrderConfirmationMessages(supabaseAdmin, { phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp });
+  const result = await sendOrderConfirmationMessages(supabaseAdmin, { phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp, customMessage });
   return NextResponse.json(result);
 }
