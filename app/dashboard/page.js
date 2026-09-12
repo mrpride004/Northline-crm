@@ -902,6 +902,75 @@ function AssignModal({ order, profiles, onSave, onClose }) {
   );
 }
 
+// ---------- Today's follow-ups — the sales-nudge widget for staff ----------
+// A "New" order nobody has reached yet, or one marked "Unreachable" on a
+// prior attempt, is a lead going cold. Rescheduled orders are deliberately
+// excluded — the customer asked to be contacted on a specific future date,
+// and that reschedule_date already flips the order back to New automatically
+// when it arrives, so nudging it early would undercut the whole point of
+// rescheduling. "Confirmed" and later are past the sales stage.
+//
+// Cadence is three tiers since the last touch (a remark, or failing that the
+// last status change, or failing that when the order was created) — 6h, 24h,
+// 3 days — read straight from data that already exists (latestRemarks,
+// status_updated_at) rather than a stored "next nudge due" column, so it's
+// always live and never needs a background job to keep in sync.
+const FOLLOWUP_STATUSES = ['New', 'Unreachable'];
+function followUpTier(hoursSince) {
+  if (hoursSince >= 72) return { key: 'urgent', label: '3+ days', color: '#B0483F' };
+  if (hoursSince >= 24) return { key: 'high', label: '24h+', color: '#C6862F' };
+  if (hoursSince >= 6) return { key: 'due', label: '6h+', color: '#8A93A0' };
+  return null;
+}
+function FollowUpWidget({ orders, latestRemarks }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const now = Date.now();
+  const items = orders
+    .filter(o => FOLLOWUP_STATUSES.includes(o.status))
+    .map(o => {
+      const lastTouch = (latestRemarks && latestRemarks[o.id] && latestRemarks[o.id].created_at) || o.status_updated_at || o.created_at;
+      const hoursSince = (now - new Date(lastTouch).getTime()) / 3600000;
+      const tier = followUpTier(hoursSince);
+      return tier ? { order: o, hoursSince, tier } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.hoursSince - a.hoursSince);
+
+  if (items.length === 0) return null;
+
+  function timeLabel(h) {
+    if (h < 24) return `${Math.floor(h)}h since last contact`;
+    return `${Math.floor(h / 24)}d since last contact`;
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #EFE9DD', borderLeft: '4px solid #C6862F', borderRadius: '8px', padding: '14px 16px', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setCollapsed(!collapsed)}>
+        <div>
+          <span style={{ fontWeight: 700, fontSize: '13.5px' }}>📞 Today's follow-ups ({items.length})</span>
+          <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>New or Unreachable orders untouched for 6h, 24h or 3+ days</div>
+        </div>
+        <span style={{ fontSize: '11px', color: '#8A93A0' }}>{collapsed ? 'Show' : 'Hide'}</span>
+      </div>
+      {!collapsed && (
+        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          {items.slice(0, 12).map(({ order: o, hoursSince, tier }) => (
+            <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12.5px', padding: '7px 0', borderBottom: '1px solid #F3EFE6' }}>
+              <div>
+                <span style={{ fontWeight: 600 }}>{o.customer}</span>{' '}
+                <span style={{ color: '#8A93A0' }}>{o.phone}</span>
+                <div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.status} · {timeLabel(hoursSince)}</div>
+              </div>
+              <span style={{ background: tier.color + '22', color: tier.color, fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '10px', whiteSpace: 'nowrap' }}>{tier.label}</span>
+            </div>
+          ))}
+          {items.length > 12 && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>+{items.length - 12} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, profile, settings, dispatchCompanies, packages, productSets, latestRemarks, upsellsByOrder, lastSeen, session, refresh }) {
   const [activeProduct, setActiveProduct] = useState('all');
   const [activeState, setActiveState] = useState('all');
@@ -1214,6 +1283,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
   return (
     <div>
+      {myRole === 'staff' && <FollowUpWidget orders={orders} latestRemarks={latestRemarks} />}
       <div className="topbar">
         <div>
           <h1 className="page-title">{title || 'All orders'}</h1>
