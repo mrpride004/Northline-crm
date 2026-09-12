@@ -295,11 +295,14 @@ export async function POST(request) {
     }
 
     try {
-      const notifyIds = await getOrderNotifyRecipients(supabaseAdmin);
+      const notifyIds = await getOrderNotifyRecipients(supabaseAdmin, source.eligible_staff);
       if (notifyIds.length > 0) {
+        // Landing-page orders always arrive unassigned — frame it as a race
+        // so eligible staff actually go claim it instead of leaving it to sit.
         await notifyUsersServer(supabaseAdmin, {
           userIds: notifyIds, type: 'new_order', orderId: order.id,
-          title: 'New order', body: `${order.customer}${order.state ? ' · ' + order.state : ''}`,
+          title: 'Order up for grabs',
+          body: `${order.customer}${order.state ? ' · ' + order.state : ''} — first to claim it gets it`,
         });
       }
     } catch (e) {
