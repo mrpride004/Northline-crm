@@ -326,11 +326,11 @@ export function orderTotal(o, upsells) {
   return current.amount - fee;
 }
 
-export async function sendConfirmation({ phone, customerName, orderId, sendSms, sendWhatsapp }) {
+export async function sendConfirmation({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp }) {
   try {
     await fetch('/api/send-confirmation', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, customerName, orderId, sendSms, sendWhatsapp }),
+      body: JSON.stringify({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp }),
     });
   } catch (e) { console.error('Confirmation send failed', e); }
 }
@@ -1139,7 +1139,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
   const [historyPersonId, setHistoryPersonId] = useState('');
   const [orderSources, setOrderSources] = useState([]);
   const [editingSource, setEditingSource] = useState(null);
-  const DEFAULT_CONFIRM_TEMPLATE = "Hi {customer}, we've received your order ({order_short}) and it's being processed.{track_line} — Trailblazer";
+  const DEFAULT_CONFIRM_TEMPLATE = "Hi {customer}, we've received your order for {product} ({order_short}) and it's being processed.{track_line} — Trailblazer";
   const [confirmMessage, setConfirmMessage] = useState(settings?.auto_confirm_message || DEFAULT_CONFIRM_TEMPLATE);
   const [savingConfirmMessage, setSavingConfirmMessage] = useState(false);
   const [confirmMessageSaved, setConfirmMessageSaved] = useState(false);
@@ -1376,7 +1376,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
           style={{ width: '100%', fontFamily: 'inherit' }}
         />
         <p style={{ fontSize: '11.5px', color: '#8A93A0', margin: '4px 0 8px' }}>
-          Placeholders: <code>{'{customer}'}</code> name, <code>{'{order_short}'}</code> short order ID, <code>{'{track_line}'}</code> tracking sentence (blank if tracking isn't set up). Used for both SMS and the "Send confirmation" button; WhatsApp still needs its own approved Meta template.
+          Placeholders: <code>{'{customer}'}</code> name, <code>{'{product}'}</code> product/package/set ordered, <code>{'{order_short}'}</code> short order ID, <code>{'{track_line}'}</code> tracking sentence (blank if tracking isn't set up). This wording is used for SMS (fully free text) — WhatsApp instead sends a fixed template that Meta has pre-approved, with the same customer name, product, order ID and tracking link filled into it, so the exact phrasing there can only be changed by submitting a new template version to Meta for review.
         </p>
         <button className="btn" onClick={saveConfirmMessage} disabled={savingConfirmMessage}>
           {savingConfirmMessage ? 'Saving…' : confirmMessageSaved ? '✓ Saved' : 'Save message'}

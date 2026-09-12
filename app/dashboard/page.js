@@ -909,8 +909,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     if (!error && data) {
       await logEvent({ order_id: data.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'created', note: 'Order created' });
       if (data.phone && (settings?.sms_auto_confirm === 'true' || settings?.whatsapp_auto_confirm === 'true')) {
+        const itemLabel = data.set_id ? setName(data.set_id) : data.package_id ? pkgName(data.package_id) : prodName(data.product_id);
         sendConfirmation({
-          phone: data.phone, customerName: data.customer, orderId: data.id,
+          phone: data.phone, customerName: data.customer, orderId: data.id, itemLabel,
           sendSms: settings?.sms_auto_confirm === 'true',
           sendWhatsapp: settings?.whatsapp_auto_confirm === 'true',
         });
@@ -1227,7 +1228,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyTrackingLink(o.id)}>Copy tracking link</div>
                       <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
                       {isAdmin && o.phone && (
-                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { const itemLabel = o.set_id ? setName(o.set_id) : o.package_id ? pkgName(o.package_id) : prodName(o.product_id); sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, itemLabel, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
                       )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
@@ -1333,7 +1334,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => copyTrackingLink(o.id)}>Copy tracking link</div>
                       <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
                       {isAdmin && o.phone && (
-                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { const itemLabel = o.set_id ? setName(o.set_id) : o.package_id ? pkgName(o.package_id) : prodName(o.product_id); sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, itemLabel, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
                       )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
