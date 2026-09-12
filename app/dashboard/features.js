@@ -1898,6 +1898,181 @@ export function ProductPackagesModal({ product, products, onClose }) {
 }
 
 
+export function ProductCategoriesPage({ categories, products, refresh }) {
+  const [name, setName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState('');
+  const [renameEdits, setRenameEdits] = useState({});
+
+  async function add() {
+    if (adding || !name.trim()) return;
+    setAdding(true);
+    setError('');
+    try {
+      const { error: err } = await supabase.from('product_categories').insert({ name: name.trim() });
+      if (err) { setError(err.code === '23505' ? 'A category with that name already exists.' : err.message); return; }
+      setName('');
+      refresh();
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function rename(cat) {
+    const val = (renameEdits[cat.id] ?? '').trim();
+    if (!val || val === cat.name) { setRenameEdits({ ...renameEdits, [cat.id]: undefined }); return; }
+    const { error: err } = await supabase.from('product_categories').update({ name: val }).eq('id', cat.id);
+    if (err) { alert(err.code === '23505' ? 'A category with that name already exists.' : err.message); return; }
+    setRenameEdits({ ...renameEdits, [cat.id]: undefined });
+    refresh();
+  }
+
+  async function remove(cat) {
+    const { error: err } = await supabase.from('product_categories').delete().eq('id', cat.id);
+    if (err) { alert('Could not remove this category — remove or reassign its products first.'); return; }
+    refresh();
+  }
+
+  return (
+    <div>
+      <div className="topbar" style={{ borderLeft: '4px solid #8E24AA', paddingLeft: '14px' }}>
+        <div><h1 className="page-title">Categories</h1><p className="page-sub">Group products for organization and reporting — assign a category to each product from the Products tab.</p></div>
+      </div>
+      <div className="list-manage" style={{ marginBottom: '18px' }}>
+        {categories.map(cat => {
+          const count = products.filter(p => p.category_id === cat.id).length;
+          return (
+            <div key={cat.id} className="list-manage-row">
+              <span>
+                <input
+                  type="text"
+                  value={renameEdits[cat.id] ?? cat.name}
+                  onChange={e => setRenameEdits({ ...renameEdits, [cat.id]: e.target.value })}
+                  style={{ fontSize: '13px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px', minWidth: '160px' }}
+                />
+                <span style={{ color: '#8A93A0', fontSize: '11.5px', marginLeft: '8px' }}>· {count} product{count !== 1 ? 's' : ''}</span>
+              </span>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button className="link-btn" onClick={() => rename(cat)}>Save</button>
+                <button className="tiny-x" onClick={() => remove(cat)}>Remove</button>
+              </div>
+            </div>
+          );
+        })}
+        {categories.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No categories yet.</div>}
+      </div>
+      <div className="row2" style={{ maxWidth: '420px' }}>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="New category name" />
+        <button className="btn primary" onClick={add} disabled={adding} style={{ flex: '0 0 auto' }}>{adding ? 'Adding…' : 'Add category'}</button>
+      </div>
+      {error && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '6px' }}>{error}</p>}
+    </div>
+  );
+}
+
+export function ProductVariantsModal({ product, onClose }) {
+  const [variants, setVariants] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [size, setSize] = useState('');
+  const [color, setColor] = useState('');
+  const [sku, setSku] = useState('');
+  const [price, setPrice] = useState('');
+  const [stock, setStock] = useState('0');
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    const { data } = await supabase.from('product_variants').select('*').eq('product_id', product.id).order('created_at');
+    setVariants(data || []);
+    setLoading(false);
+  }
+
+  async function addVariant() {
+    if (adding) return; // guard against double-clicks creating duplicate variants
+    if (!size.trim() && !color.trim()) { setError('Give this variant a size, a color, or both.'); return; }
+    setAdding(true);
+    setError('');
+    try {
+      const { error: err } = await supabase.from('product_variants').insert({
+        product_id: product.id,
+        size: size.trim() || null,
+        color: color.trim() || null,
+        sku: sku.trim() || null,
+        price: price === '' ? null : parseFloat(price),
+        stock_quantity: parseInt(stock, 10) || 0,
+      });
+      if (err) { setError(err.code === '23505' ? 'That code is already used by another variant — pick a different one.' : err.message); return; }
+      setSize(''); setColor(''); setSku(''); setPrice(''); setStock('0');
+      load();
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function removeVariant(id) {
+    await supabase.from('product_variants').delete().eq('id', id);
+    load();
+  }
+
+  async function toggleActive(v) {
+    await supabase.from('product_variants').update({ active: !v.active }).eq('id', v.id);
+    load();
+  }
+
+  function variantLabel(v) {
+    return [v.size, v.color].filter(Boolean).join(' / ') || 'Default';
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Variants · {product.name}</h3>
+        <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>
+          Add a row for each size/color combination this product comes in, with its own code, price
+          (optional — falls back to the product's default price when blank), and stock count.
+        </p>
+        {loading ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
+          <div className="list-manage" style={{ marginBottom: '16px' }}>
+            {variants.map(v => (
+              <div key={v.id} className="list-manage-row">
+                <span>
+                  {variantLabel(v)}{' '}
+                  {v.sku && <span className="pill" style={{ background: '#EEF2F8', color: '#4A7FBF', border: '1px solid #D6E0EE', fontFamily: 'monospace', fontSize: '11px' }}>{v.sku}</span>}
+                  {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
+                    {v.price != null ? `· ₦${Number(v.price).toLocaleString()}` : ''} · {v.stock_quantity} in stock
+                  </span>
+                  {!v.active && <span className="pill Cancelled" style={{ marginLeft: '8px' }}>Off</span>}
+                </span>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="link-btn" onClick={() => toggleActive(v)}>{v.active ? 'Turn off' : 'Turn on'}</button>
+                  <button className="tiny-x" onClick={() => removeVariant(v.id)}>Remove</button>
+                </div>
+              </div>
+            ))}
+            {variants.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No variants yet — this product sells as a single plain item.</div>}
+          </div>
+        )}
+        <div className="row2">
+          <div><label style={{ marginTop: 0 }}>Size (optional)</label><input value={size} onChange={e => setSize(e.target.value)} placeholder="e.g. Small, 250ml" /></div>
+          <div><label style={{ marginTop: 0 }}>Color (optional)</label><input value={color} onChange={e => setColor(e.target.value)} placeholder="e.g. Red" /></div>
+        </div>
+        <label>Code / SKU (optional)</label>
+        <input value={sku} onChange={e => setSku(e.target.value)} placeholder="Unique code for this variant" style={{ fontFamily: 'monospace' }} />
+        <div className="row2">
+          <div><label>Price override (₦, optional)</label><input type="number" min="0" value={price} onChange={e => setPrice(e.target.value)} placeholder="Uses product default if blank" /></div>
+          <div><label>Starting stock</label><input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} /></div>
+        </div>
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Close</button>
+          <button className="btn primary" onClick={addVariant} disabled={adding}>{adding ? 'Adding…' : 'Add variant'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function InventoryPage({ products, orders, profiles, agentStock, refresh }) {
   const [exactEdits, setExactEdits] = useState({});
   const [addAmounts, setAddAmounts] = useState({});

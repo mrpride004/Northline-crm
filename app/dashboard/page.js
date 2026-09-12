@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, STAFF_ASSIGNABLE_STATUSES, pillClass, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub, FailedDeliveriesPage } from './features';
+import { STATUSES, STAFF_ASSIGNABLE_STATUSES, pillClass, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub, FailedDeliveriesPage, ProductCategoriesPage, ProductVariantsModal } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -76,6 +76,8 @@ function DashboardInner() {
   const [dispatchCompanies, setDispatchCompanies] = useState([]);
   const [packages, setPackages] = useState([]);
   const [productSets, setProductSets] = useState([]);
+  const [productCategories, setProductCategories] = useState([]);
+  const [productVariants, setProductVariants] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -315,7 +317,7 @@ function DashboardInner() {
 
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }, { data: cats }, { data: variants }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -328,8 +330,12 @@ function DashboardInner() {
       supabase.from('product_sets').select('*').eq('active', true),
       supabase.from('product_set_items').select('*'),
       supabase.from('role_permission_defaults').select('*'),
+      supabase.from('product_categories').select('*').order('name'),
+      supabase.from('product_variants').select('*').order('created_at'),
     ]);
     setProducts(prod || []);
+    setProductCategories(cats || []);
+    setProductVariants(variants || []);
     setOrders(ord || []);
     setProfiles(profs || []);
     const rdMap = {};
@@ -512,7 +518,7 @@ function DashboardInner() {
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
         {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} onNavigateFinance={() => setPage('finance')} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
-        {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
+        {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} productCategories={productCategories} productVariants={productVariants} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
         {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
@@ -1978,16 +1984,21 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
   );
 }
 
-function ProductsPage({ products, orders, packages, profiles, refresh }) {
+function ProductsPage({ products, orders, packages, profiles, productCategories, productVariants, refresh }) {
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
   const [managingPackages, setManagingPackages] = useState(null);
   const [managingCommission, setManagingCommission] = useState(null);
+  const [managingVariants, setManagingVariants] = useState(null);
   const [tab, setTab] = useState('products');
   const [priceEdits, setPriceEdits] = useState({});
   const [skuEdits, setSkuEdits] = useState({});
   const [addError, setAddError] = useState('');
   const [adding, setAdding] = useState(false);
+  async function setCategory(p, categoryId) {
+    await supabase.from('products').update({ category_id: categoryId || null }).eq('id', p.id);
+    refresh();
+  }
   async function add() {
     if (adding) return; // guard against double-clicks creating duplicate products
     if (!name.trim()) return;
@@ -2036,20 +2047,26 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
       <div className="product-tabs">
         <span className={'ptab' + (tab === 'products' ? ' active' : '')} onClick={() => setTab('products')}>Products</span>
         <span className={'ptab' + (tab === 'sets' ? ' active' : '')} onClick={() => setTab('sets')}>Sets</span>
+        <span className={'ptab' + (tab === 'categories' ? ' active' : '')} onClick={() => setTab('categories')}>Categories</span>
       </div>
       {tab === 'sets' ? (
         <ProductSetsPage products={products} profiles={profiles} refresh={refresh} />
+      ) : tab === 'categories' ? (
+        <ProductCategoriesPage categories={productCategories || []} products={products} refresh={refresh} />
       ) : (
       <>
       <div className="list-manage" style={{ marginBottom: '18px' }}>
         {products.map(p => {
           const pkgCount = (packages || []).filter(pk => pk.product_id === p.id).length;
+          const variantCount = (productVariants || []).filter(v => v.product_id === p.id).length;
+          const category = (productCategories || []).find(c => c.id === p.category_id);
           return (
             <div key={p.id} className="list-manage-row">
               <span>
                 {p.name}{' '}
                 {p.sku && <span className="pill" style={{ background: '#EEF2F8', color: '#4A7FBF', border: '1px solid #D6E0EE', fontFamily: 'monospace', fontSize: '11px' }}>{p.sku}</span>}
-                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}{p.default_price ? ` · default ₦${Number(p.default_price).toLocaleString()}` : ''}</span>
+                {' '}{category && <span className="pill" style={{ background: '#F3E8FB', color: '#8E24AA', border: '1px solid #E5D2F0' }}>{category.name}</span>}
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}{variantCount > 0 ? ` · ${variantCount} variant${variantCount !== 1 ? 's' : ''}` : ''}{p.default_price ? ` · default ₦${Number(p.default_price).toLocaleString()}` : ''}</span>
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                 <input
@@ -2066,7 +2083,16 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
                   style={{ width: '110px', fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
                 />
                 <button className="link-btn" onClick={() => saveDefaultPrice(p)}>Save price</button>
+                <select
+                  value={p.category_id || ''}
+                  onChange={e => setCategory(p, e.target.value)}
+                  style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+                >
+                  <option value="">No category</option>
+                  {(productCategories || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
                 <button className="link-btn" onClick={() => setManagingPackages(p)}>Manage packages</button>
+                <button className="link-btn" onClick={() => setManagingVariants(p)}>Manage variants</button>
                 <button className="link-btn" onClick={() => setManagingCommission(p)}>Standard & upsell commission</button>
                 <button className="tiny-x" onClick={() => remove(p.id)}>Remove</button>
               </div>
@@ -2084,6 +2110,7 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
       </>
       )}
       {managingPackages && <ProductPackagesModal product={managingPackages} products={products} onClose={() => { setManagingPackages(null); refresh(); }} />}
+      {managingVariants && <ProductVariantsModal product={managingVariants} onClose={() => { setManagingVariants(null); refresh(); }} />}
       {managingCommission && <CommissionRuleModal product={managingCommission} profiles={profiles} onClose={() => setManagingCommission(null)} />}
     </div>
   );
