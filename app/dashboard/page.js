@@ -160,9 +160,13 @@ function DashboardInner() {
             : `🔔 New order — ${o.customer}${o.state ? ' · ' + o.state : ''}`;
           showOrderAlert(msg);
           playNotificationSound();
-          if (profile.role !== 'admin') {
-            notifyUsers(session, { userIds: [profile.id], type: 'new_order', title: 'New order', body: `${o.customer}${o.state ? ' · ' + o.state : ''}`, orderId: o.id });
-          }
+          // Admins used to be skipped here on the assumption they'd "just see it" —
+          // but that only works if an admin's tab happens to be open right when the
+          // order lands. Recording it (and pushing) for everyone relevant, admins
+          // included, is what actually makes sure nobody finds out about a new
+          // order late. (WordPress-sourced orders are also now notified directly
+          // from the server in /api/order-intake, so this is the live-tab path.)
+          notifyUsers(session, { userIds: [profile.id], type: 'new_order', title: 'New order', body: `${o.customer}${o.state ? ' · ' + o.state : ''}`, orderId: o.id });
         }
         refreshAll();
       })
@@ -1162,6 +1166,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span>
                   <div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}{o.state ? ` · ${o.state}` : ''}</div>
                   {o.phone2 && <div style={{ fontSize: '11px', color: '#8A93A0' }}>Alt: {o.phone2}</div>}
+                  {o.address && <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '2px' }}>{o.address}</div>}
                 </td>
                 <td style={{ fontSize: '12px' }}>
                   <span className={'pill ' + (o.payment_status === 'Paid' ? 'Delivered' : o.payment_status === 'Partial' ? 'Preparing' : 'Cancelled')}>{o.payment_status || 'Unpaid'}</span>
@@ -1278,6 +1283,8 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
 
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value"><span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span></span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">State</span><span className="mobile-card-value">{o.state || '—'}</span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
                 <div className="mobile-card-row">
                   <span className="mobile-card-label">Payment</span>
                   <span className="mobile-card-value">
@@ -1692,7 +1699,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                 <td style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</td>
                 <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
                 <td>
-                  {o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}</div>
+                  {o.customer}<div style={{ fontSize: '11px', color: '#8A93A0' }}>{o.phone}{o.state ? ` · ${o.state}` : ''}</div>
                   <div style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '2px' }}>{o.address || '—'}</div>
                   {(o.reschedule_date || o.preferred_time) && (
                     <div style={{ fontSize: '10.5px', color: '#8A93A0', marginTop: '3px' }}>{o.reschedule_date ? `📅 ${o.reschedule_date}` : `⏰ ${o.preferred_time}`}</div>
@@ -1765,6 +1772,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                 {current.changed && <span style={{ display: 'inline-block', background: '#C6862F', color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', letterSpacing: '.03em', marginTop: '4px' }}>PACKAGE CHANGED</span>}
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value">{o.customer}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
+                <div className="mobile-card-row"><span className="mobile-card-label">State</span><span className="mobile-card-value">{o.state || '—'}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Address</span><span className="mobile-card-value">{o.address || '—'}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">To collect</span><span className="mobile-card-value" style={{ fontWeight: 600 }}>₦{current.amount.toLocaleString()}</span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Delivery fee</span><span className="mobile-card-value">₦{Number(o.delivery_fee || 0).toLocaleString()}</span></div>

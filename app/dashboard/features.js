@@ -1139,6 +1139,19 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
   const [historyPersonId, setHistoryPersonId] = useState('');
   const [orderSources, setOrderSources] = useState([]);
   const [editingSource, setEditingSource] = useState(null);
+  const DEFAULT_CONFIRM_TEMPLATE = "Hi {customer}, we've received your order ({order_short}) and it's being processed.{track_line} — Trailblazer";
+  const [confirmMessage, setConfirmMessage] = useState(settings?.auto_confirm_message || DEFAULT_CONFIRM_TEMPLATE);
+  const [savingConfirmMessage, setSavingConfirmMessage] = useState(false);
+  const [confirmMessageSaved, setConfirmMessageSaved] = useState(false);
+  useEffect(() => { setConfirmMessage(settings?.auto_confirm_message || DEFAULT_CONFIRM_TEMPLATE); }, [settings?.auto_confirm_message]);
+  async function saveConfirmMessage() {
+    setSavingConfirmMessage(true);
+    await supabase.from('app_settings').upsert({ key: 'auto_confirm_message', value: confirmMessage.trim() || DEFAULT_CONFIRM_TEMPLATE });
+    await refresh();
+    setSavingConfirmMessage(false);
+    setConfirmMessageSaved(true);
+    setTimeout(() => setConfirmMessageSaved(false), 2500);
+  }
 
   useEffect(() => { loadOrderSources(); }, []);
   async function loadOrderSources() {
@@ -1349,10 +1362,26 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
           <button className="btn" onClick={() => toggleSetting('whatsapp_auto_confirm')}>{settings.whatsapp_auto_confirm === 'true' ? 'On — turn off' : 'Off — turn on'}</button>
         </div>
       </div>
-      <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-10px', marginBottom: '22px' }}>
+      <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-10px', marginBottom: '14px' }}>
         Even with these off, you can always send a confirmation manually from the order row. These only need
         TERMII / WhatsApp keys set up in Vercel to actually send — see the README.
       </p>
+
+      <div style={{ marginBottom: '22px' }}>
+        <label style={{ marginTop: 0 }}>Auto-confirmation message</label>
+        <textarea
+          value={confirmMessage}
+          onChange={e => setConfirmMessage(e.target.value)}
+          rows={3}
+          style={{ width: '100%', fontFamily: 'inherit' }}
+        />
+        <p style={{ fontSize: '11.5px', color: '#8A93A0', margin: '4px 0 8px' }}>
+          Placeholders: <code>{'{customer}'}</code> name, <code>{'{order_short}'}</code> short order ID, <code>{'{track_line}'}</code> tracking sentence (blank if tracking isn't set up). Used for both SMS and the "Send confirmation" button; WhatsApp still needs its own approved Meta template.
+        </p>
+        <button className="btn" onClick={saveConfirmMessage} disabled={savingConfirmMessage}>
+          {savingConfirmMessage ? 'Saving…' : confirmMessageSaved ? '✓ Saved' : 'Save message'}
+        </button>
+      </div>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Preferred dispatch agent per state</h3>
       <p style={{ fontSize: '12.5px', color: '#8A93A0', marginBottom: '10px' }}>
