@@ -85,6 +85,7 @@ tbody tr:hover{background:#FAF8F4;}
 .pill.Delivered{background:#DEEEDD; color:#2E7A2E;}
 .pill.Cancelled{background:#F3DEDC; color:var(--rust);}
 .pill.Unreachable{background:#F3E4D2; color:#9A5B1E;}
+.pill.Unverified{background:#F5DED6; color:#9A4A2E;}
 .pill.Rescheduled{background:#EDE6F3; color:#5D3B8A;}
 select.status-sel{font-size:12px; padding:5px 8px; border-radius:var(--radius-sm); border:1px solid var(--line); background:#fff;}
 .empty{padding:40px; text-align:center; color:var(--ink-soft); font-size:13.5px;}
