@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { sendOrderConfirmationMessages, notifyUsersServer, getOrderNotifyRecipients, getAutoConfirmSettings } from '../../../lib/serverNotify';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -268,6 +269,34 @@ export async function POST(request) {
       content_type: contentType, parse_method: parseMethod, resolved_fields: resolvedFields, order_id: order.id,
       raw_body: rawText, parsed_body: body,
     });
+
+    // Orders from this route arrive with nobody's browser necessarily open —
+    // unlike an order typed into the dashboard, there's no logged-in session
+    // to piggyback a client-side notification on. So confirmation + alerting
+    // has to happen right here, server-side, or it may never happen at all.
+    try {
+      const { sms, whatsapp } = await getAutoConfirmSettings(supabaseAdmin);
+      if (order.phone && (sms || whatsapp)) {
+        await sendOrderConfirmationMessages(supabaseAdmin, {
+          phone: order.phone, customerName: order.customer, orderId: order.id,
+          sendSms: sms, sendWhatsapp: whatsapp,
+        });
+      }
+    } catch (e) {
+      console.error('[order-intake] auto-confirmation failed:', e.message);
+    }
+
+    try {
+      const notifyIds = await getOrderNotifyRecipients(supabaseAdmin);
+      if (notifyIds.length > 0) {
+        await notifyUsersServer(supabaseAdmin, {
+          userIds: notifyIds, type: 'new_order', orderId: order.id,
+          title: 'New order', body: `${order.customer}${order.state ? ' · ' + order.state : ''}`,
+        });
+      }
+    } catch (e) {
+      console.error('[order-intake] admin/staff notify failed:', e.message);
+    }
 
     return NextResponse.json({
       success: true,
