@@ -28,7 +28,7 @@ export default function LoginPage() {
       return;
     }
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
       email: lookupBody.email,
       password,
     });
@@ -36,6 +36,13 @@ export default function LoginPage() {
     if (signInError) {
       setError('Incorrect username/email or password.');
       return;
+    }
+    // Best-effort — a failed history log should never block getting in.
+    if (signInData?.session?.access_token) {
+      fetch('/api/log-signin', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${signInData.session.access_token}` },
+      }).catch(() => {});
     }
     router.replace('/dashboard');
   }
