@@ -1248,7 +1248,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable' || o.status === 'Unverified') && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && profile?.can_upsell !== false)) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (
@@ -1354,7 +1354,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id))) && o.status === 'New' && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Confirm</div>
                       )}
-                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable') && (
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && (o.status === 'Cancelled' || o.status === 'Unreachable' || o.status === 'Unverified') && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setConfirming(o); setActionsOpenFor(null); }}>Reconfirm</div>
                       )}
                       {(isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && profile?.can_upsell !== false)) && o.confirmed_at && o.status !== 'Cancelled' && o.status !== 'Delivered' && (

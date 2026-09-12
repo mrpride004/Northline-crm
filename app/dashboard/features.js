@@ -2,7 +2,7 @@
 import { useState, useEffect, Fragment } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
-const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Rescheduled', 'Cancelled'];
+const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Unverified', 'Rescheduled', 'Cancelled'];
 
 export function statusRowColor(status) {
   const map = {
@@ -12,6 +12,7 @@ export function statusRowColor(status) {
     Dispatched: '#B6DEF3',
     Delivered: '#BEE4BE',
     Unreachable: '#F0C889',
+    Unverified: '#E0937A',
     Rescheduled: '#D7BEEC',
     Cancelled: '#EFBEBA',
   };
@@ -598,12 +599,19 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
   const isDelivering = newStatus === 'Delivered';
   const isCancelling = newStatus === 'Cancelled';
   const isRescheduling = newStatus === 'Rescheduled';
+  const isUnverified = newStatus === 'Unverified';
   const showFeeField = canEditFee && (isDelivering || isCancelling);
+  const remarkMissing = isUnverified && !remark.trim();
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Mark as {newStatus}</h3>
+        {isUnverified && (
+          <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-6px', marginBottom: '12px' }}>
+            For a customer who placed an order but isn't looking serious, or kept giving excuses on the confirmation call. Record exactly what they said below — this is what makes the status useful.
+          </p>
+        )}
         {showFeeField && (
           <>
             <label style={{ marginTop: 0 }}>Delivery fee collected (₦)</label>
@@ -627,11 +635,16 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
             <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} autoFocus />
           </>
         )}
-        <label style={{ marginTop: (showFeeField || isRescheduling) ? '14px' : 0 }}>Remark (optional)</label>
-        <textarea value={remark} onChange={e => setRemark(e.target.value)} placeholder="Anything worth noting about this update" autoFocus={!showFeeField && !isRescheduling} />
+        <label style={{ marginTop: (showFeeField || isRescheduling) ? '14px' : 0 }}>Remark {isUnverified ? '— what did they say?' : '(optional)'}</label>
+        <textarea
+          value={remark} onChange={e => setRemark(e.target.value)}
+          placeholder={isUnverified ? "e.g. \"Said they'll call back, never did\", \"Kept asking for a discount then went quiet\", \"Claims they didn't place the order\"" : 'Anything worth noting about this update'}
+          autoFocus={!showFeeField && !isRescheduling}
+        />
+        {remarkMissing && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '4px' }}>A remark is required for Unverified — it's the whole point of the status.</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate, paidNow })}>Confirm</button>
+          <button className="btn primary" disabled={remarkMissing} onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate, paidNow })}>Confirm</button>
         </div>
       </div>
     </div>
@@ -3611,6 +3624,7 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
     delivered: statusChangedThatDay.filter(o => o.status === 'Delivered').length,
     cancelled: statusChangedThatDay.filter(o => o.status === 'Cancelled').length,
     unreachable: statusChangedThatDay.filter(o => o.status === 'Unreachable').length,
+    unverified: statusChangedThatDay.filter(o => o.status === 'Unverified').length,
     rescheduled: statusChangedThatDay.filter(o => o.status === 'Rescheduled').length,
   };
 
@@ -3638,6 +3652,7 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
         <div className="stat"><div className="stat-num">{counts.delivered}</div><div className="stat-label">Delivered</div></div>
         <div className="stat"><div className="stat-num">{counts.cancelled}</div><div className="stat-label">Cancelled</div></div>
         <div className="stat"><div className="stat-num">{counts.unreachable}</div><div className="stat-label">Unreachable</div></div>
+        <div className="stat"><div className="stat-num">{counts.unverified}</div><div className="stat-label">Unverified</div></div>
         <div className="stat"><div className="stat-num">{counts.rescheduled}</div><div className="stat-label">Rescheduled</div></div>
       </div>
       {activity.length === 0 ? (
