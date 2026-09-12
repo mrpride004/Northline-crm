@@ -525,7 +525,7 @@ function DashboardInner() {
         {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} onNavigateFinance={() => setPage('finance')} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} productCategories={productCategories} productVariants={productVariants} refresh={refreshAll} />}
-        {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refreshAll} />}
+        {isAdmin && page === 'inventory' && <InventoryHub products={products} productSets={productSets} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} session={session} profile={profile} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
         {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} latestRemarks={latestRemarks} />}
@@ -546,7 +546,7 @@ function DashboardInner() {
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
 
-        {isInventoryManager && page === 'dashboard' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refreshAll} />}
+        {isInventoryManager && page === 'dashboard' && <InventoryHub products={products} productSets={productSets} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} session={session} profile={profile} refresh={refreshAll} />}
       </div>
     </div>
   );

@@ -6,6 +6,13 @@ const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'U
 
 const LEAD_SOURCES = ['WhatsApp', 'Instagram', 'Facebook', 'TikTok', 'Website', 'Phone Call', 'Referral', 'Influencer', 'Walk-in', 'Other'];
 
+const RETURN_REASONS = ['Wrong size', 'Wrong product', 'Damaged', 'Customer changed mind', 'Product defect', 'Failed delivery', 'Other'];
+const RETURN_STATUSES = ['Requested', 'Approved', 'Rejected', 'Product Received', 'Inspection', 'Refund/Exchange', 'Completed'];
+const RETURN_STATUS_COLORS = {
+  Requested: '#C6862F', Approved: '#4A7FBF', Rejected: '#B0483F', 'Product Received': '#8A5EBF',
+  Inspection: '#8A5EBF', 'Refund/Exchange': '#2E7D32', Completed: '#3730A3',
+};
+
 // Statuses a staff member can ever be granted (via role default or personal
 // override) — 'Failed Delivery' is deliberately left out here, not just
 // unchecked by default: only admin/dispatch can ever set it, so it doesn't
@@ -4239,7 +4246,7 @@ export function CommissionHub({ profiles, orders, products, packages, productSet
 }
 
 // ---------- Unified Inventory hub: stock levels + agent stock together ----------
-export function InventoryHub({ products, orders, profiles, agentStock, suppliers, refresh }) {
+export function InventoryHub({ products, productSets, orders, profiles, agentStock, suppliers, session, profile, refresh }) {
   const [tab, setTab] = useState('inventory');
   return (
     <div>
@@ -4247,10 +4254,372 @@ export function InventoryHub({ products, orders, profiles, agentStock, suppliers
         <span className={'ptab' + (tab === 'inventory' ? ' active' : '')} onClick={() => setTab('inventory')}>Inventory</span>
         <span className={'ptab' + (tab === 'agentstock' ? ' active' : '')} onClick={() => setTab('agentstock')}>Agent stock</span>
         <span className={'ptab' + (tab === 'suppliers' ? ' active' : '')} onClick={() => setTab('suppliers')}>Suppliers</span>
+        <span className={'ptab' + (tab === 'returns' ? ' active' : '')} onClick={() => setTab('returns')}>Returns</span>
       </div>
       {tab === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refresh} />}
       {tab === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refresh} />}
       {tab === 'suppliers' && <SuppliersPage suppliers={suppliers || []} refresh={refresh} />}
+      {tab === 'returns' && <ReturnsPage orders={orders} products={products} productSets={productSets} profiles={profiles} session={session} profile={profile} refresh={refresh} />}
+    </div>
+  );
+}
+
+// ---------- Returns & refunds ----------
+function ReturnsPage({ orders, products, productSets, profiles, session, profile, refresh }) {
+  const [returnsList, setReturnsList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterStatus, setFilterStatus] = useState('active');
+  const [showNew, setShowNew] = useState(false);
+  const [detailReturn, setDetailReturn] = useState(null);
+  const [upsellsByOrder, setUpsellsByOrder] = useState({});
+
+  const canManage = !!profile && (profile.role === 'admin' || profile.role === 'inventory');
+
+  async function load() {
+    const { data } = await supabase.from('returns').select('*').order('created_at', { ascending: false });
+    setReturnsList(data || []);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('upsells').select('*');
+      const map = {};
+      (data || []).forEach(u => { if (!map[u.original_order_id]) map[u.original_order_id] = []; map[u.original_order_id].push(u); });
+      setUpsellsByOrder(map);
+    })();
+  }, []);
+  useEffect(() => {
+    const channel = supabase.channel('returns-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'returns' }, load)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  function orderFor(r) { return orders.find(o => o.id === r.order_id); }
+  function itemLabelFor(o) {
+    if (!o) return '—';
+    if (o.set_id) return ((productSets || []).find(s => s.id === o.set_id) || {}).name || 'Set';
+    return (products.find(p => p.id === o.product_id) || {}).name || 'Product';
+  }
+
+  const ACTIVE_STATUSES = RETURN_STATUSES.filter(s => s !== 'Completed' && s !== 'Rejected');
+  const filtered = returnsList.filter(r => {
+    if (filterStatus === 'all') return true;
+    if (filterStatus === 'active') return ACTIVE_STATUSES.includes(r.status);
+    return r.status === filterStatus;
+  });
+
+  if (loading) return <div className="loading">Loading returns…</div>;
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Returns &amp; refunds</h1><p className="page-sub">Requested → Approved → Product received → Inspection → Refund/Exchange → Completed.</p></div>
+        <button className="btn primary" onClick={() => setShowNew(true)}>+ New return</button>
+      </div>
+
+      <div className="product-tabs" style={{ marginBottom: '14px' }}>
+        <span className={'ptab' + (filterStatus === 'active' ? ' active' : '')} onClick={() => setFilterStatus('active')}>Active</span>
+        <span className={'ptab' + (filterStatus === 'all' ? ' active' : '')} onClick={() => setFilterStatus('all')}>All</span>
+        {RETURN_STATUSES.map(s => (
+          <span key={s} className={'ptab' + (filterStatus === s ? ' active' : '')} onClick={() => setFilterStatus(s)}>{s}</span>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty">No returns in this filter yet.</div>
+      ) : (
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Item</th><th>Reason</th><th>Status</th><th>Requested</th><th></th></tr></thead>
+          <tbody>
+            {filtered.map(r => {
+              const o = orderFor(r);
+              return (
+                <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setDetailReturn(r)}>
+                  <td className="oid">{o ? (o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)) : '—'}</td>
+                  <td>{o ? o.customer : '—'}</td>
+                  <td>{itemLabelFor(o)}</td>
+                  <td>{r.reason}</td>
+                  <td><span className="pill" style={{ background: '#F5F2EA', color: RETURN_STATUS_COLORS[r.status] || '#4B5566', border: '1px solid ' + (RETURN_STATUS_COLORS[r.status] || '#DEDAD0') }}>{r.status}</span></td>
+                  <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td><span className="link-btn">Details</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {showNew && (
+        <NewReturnModal
+          orders={orders} profiles={profiles} profile={profile} session={session}
+          onClose={() => setShowNew(false)}
+          onSaved={() => { setShowNew(false); load(); }}
+        />
+      )}
+      {detailReturn && (
+        <ReturnDetailModal
+          ret={detailReturn}
+          order={orderFor(detailReturn)}
+          products={products} productSets={productSets} profile={profile}
+          upsells={upsellsByOrder[detailReturn.order_id]}
+          canManage={canManage}
+          onClose={() => setDetailReturn(null)}
+          onChanged={(updated) => { setDetailReturn(updated); load(); refresh && refresh(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewReturnModal({ orders, profiles, profile, session, onClose, onSaved }) {
+  const [search, setSearch] = useState('');
+  const [selectedOrderId, setSelectedOrderId] = useState('');
+  const [reason, setReason] = useState(RETURN_REASONS[0]);
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const eligible = orders.filter(o => o.status === 'Delivered' || o.status === 'Failed Delivery');
+  const q = search.trim().toLowerCase();
+  const matches = q
+    ? eligible.filter(o =>
+        (o.customer || '').toLowerCase().includes(q) ||
+        (o.phone || '').includes(q) ||
+        (o.serial_number ? String(o.serial_number).includes(q) : false)
+      ).slice(0, 8)
+    : [];
+  const selectedOrder = eligible.find(o => o.id === selectedOrderId);
+
+  async function submit() {
+    if (!selectedOrderId) { setError('Pick the order this return is for.'); return; }
+    setSaving(true);
+    setError('');
+    const { error: err } = await supabase.from('returns').insert({
+      order_id: selectedOrderId,
+      reason,
+      reason_note: note.trim() || null,
+      requested_by: profile?.id || null,
+      requested_by_name: profile?.full_name || null,
+    });
+    if (err) { setSaving(false); setError(err.message); return; }
+    await logEvent({ order_id: selectedOrderId, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: `Return requested — ${reason}` });
+    const adminIds = (profiles || []).filter(p => p.role === 'admin' || p.role === 'inventory').map(p => p.id);
+    if (adminIds.length > 0) {
+      notifyUsers(session, { userIds: adminIds, type: 'general', title: 'Return requested', body: `${selectedOrder ? selectedOrder.customer : ''} — ${reason}`, orderId: selectedOrderId });
+    }
+    setSaving(false);
+    onSaved();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>New return</h3>
+        {!selectedOrderId ? (
+          <>
+            <label style={{ marginTop: 0 }}>Find the order</label>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Customer name, phone, or order #" autoFocus />
+            {q && (
+              matches.length === 0 ? (
+                <p style={{ fontSize: '12px', color: '#8A93A0' }}>No delivered or failed-delivery orders match.</p>
+              ) : (
+                <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', maxHeight: '220px', overflowY: 'auto', marginTop: '6px' }}>
+                  {matches.map(o => (
+                    <div key={o.id} onClick={() => setSelectedOrderId(o.id)} style={{ padding: '8px 10px', borderBottom: '1px solid #EEE', cursor: 'pointer', fontSize: '13px' }}>
+                      <strong>{o.customer}</strong> — {o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)} · {o.phone} · <span className={'pill ' + pillClass(o.status)}>{o.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+          </>
+        ) : (
+          <>
+            <div style={{ background: '#FAF8F4', border: '1px solid #DEDAD0', borderRadius: '6px', padding: '10px 12px', marginBottom: '12px', fontSize: '13px' }}>
+              <strong>{selectedOrder.customer}</strong> — {selectedOrder.serial_number ? '#' + selectedOrder.serial_number : selectedOrder.id.slice(0, 8)}
+              <button className="link-btn" style={{ float: 'right' }} onClick={() => setSelectedOrderId('')}>Change</button>
+            </div>
+            <label style={{ marginTop: 0 }}>Reason</label>
+            <select value={reason} onChange={e => setReason(e.target.value)}>
+              {RETURN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <label>Details (optional)</label>
+            <input value={note} onChange={e => setNote(e.target.value)} placeholder="Anything else worth noting" />
+          </>
+        )}
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          {selectedOrderId && <button className="btn primary" onClick={submit} disabled={saving}>{saving ? 'Saving…' : 'File return request'}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReturnDetailModal({ ret, order, products, productSets, profile, upsells, canManage, onClose, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [rejectionNote, setRejectionNote] = useState('');
+  const [showReject, setShowReject] = useState(false);
+  const [inspectionOutcome, setInspectionOutcome] = useState('Sellable');
+  const [resolution, setResolution] = useState('Refund');
+  const [refundAmount, setRefundAmount] = useState(order ? String(Math.round(orderTotal(order, upsells))) : '');
+  const [exchangeTarget, setExchangeTarget] = useState('');
+
+  async function updateStatus(patch, remarkNote) {
+    setBusy(true);
+    setError('');
+    const { data, error: err } = await supabase.from('returns').update({ ...patch, status_updated_at: new Date().toISOString() }).eq('id', ret.id).select().single();
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    if (remarkNote) await logEvent({ order_id: ret.order_id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remarkNote });
+    onChanged(data);
+  }
+
+  async function approve() { await updateStatus({ status: 'Approved' }, 'Return approved.'); }
+  async function reject() {
+    await updateStatus(
+      { status: 'Rejected', rejection_note: rejectionNote.trim() || null, resolved_at: new Date().toISOString() },
+      `Return rejected.${rejectionNote.trim() ? ' ' + rejectionNote.trim() : ''}`
+    );
+  }
+  async function markReceived() { await updateStatus({ status: 'Product Received' }, 'Returned item received back.'); }
+  async function sendToInspection() { await updateStatus({ status: 'Inspection' }, 'Return sent to inspection.'); }
+
+  async function saveInspection() {
+    if (resolution === 'Refund' && (!refundAmount || parseFloat(refundAmount) <= 0)) { setError('Enter a refund amount.'); return; }
+    if (resolution === 'Exchange' && !exchangeTarget) { setError('Pick what the customer is being exchanged into.'); return; }
+    setBusy(true);
+    setError('');
+    // Restock only if sellable — reuses the exact mechanism already used
+    // when a delivered order gets reversed (migration_v56's adjust_stock /
+    // adjust_stock_for_set with movement_type='returned'), so available
+    // stock stays correct with no new plumbing. Damaged items are left
+    // alone — the original delivery's 'sold' movement already removed
+    // them, and they're staying removed.
+    if (inspectionOutcome === 'Sellable' && order) {
+      const current = getCurrentPackage(order, upsells);
+      try {
+        if (current.setId) {
+          await supabase.rpc('adjust_stock_for_set', { p_set_id: current.setId, p_delta_units: current.quantity || 1, p_movement_type: 'returned', p_order_id: order.id });
+        } else if (current.productId) {
+          await supabase.rpc('adjust_stock', { p_product_id: current.productId, p_delta: current.quantity || 1, p_movement_type: 'returned', p_order_id: order.id });
+        }
+      } catch (e) { /* best-effort — the return record itself remains the source of truth */ }
+    }
+    const patch = {
+      status: 'Refund/Exchange',
+      inspection_outcome: inspectionOutcome,
+      resolution,
+      refund_amount: resolution === 'Refund' ? parseFloat(refundAmount) : null,
+      exchange_product_id: resolution === 'Exchange' && exchangeTarget.startsWith('product:') ? exchangeTarget.slice(8) : null,
+      exchange_set_id: resolution === 'Exchange' && exchangeTarget.startsWith('set:') ? exchangeTarget.slice(4) : null,
+    };
+    const { data, error: err } = await supabase.from('returns').update({ ...patch, status_updated_at: new Date().toISOString() }).eq('id', ret.id).select().single();
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    await logEvent({
+      order_id: ret.order_id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark',
+      note: `Return inspected — ${inspectionOutcome}${inspectionOutcome === 'Sellable' ? ' (restocked)' : ''}. Resolution: ${resolution}${resolution === 'Refund' ? ' ₦' + parseFloat(refundAmount).toLocaleString() : ''}.`,
+    });
+    onChanged(data);
+  }
+
+  async function complete() {
+    await updateStatus({ status: 'Completed', resolved_at: new Date().toISOString() }, `Return completed — ${ret.resolution || 'resolved'}.`);
+  }
+
+  const exchangeOptions = [
+    ...(products || []).map(p => ({ value: 'product:' + p.id, label: p.name })),
+    ...(productSets || []).map(s => ({ value: 'set:' + s.id, label: s.name + ' (Set)' })),
+  ];
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Return — {order ? order.customer : 'Unknown order'}</h3>
+        <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-8px', marginBottom: '12px' }}>
+          {order ? (order.serial_number ? '#' + order.serial_number : order.id.slice(0, 8)) : ''} · Filed by {ret.requested_by_name || '—'} on {new Date(ret.created_at).toLocaleDateString()}
+        </p>
+        <div className="list-manage" style={{ marginBottom: '14px' }}>
+          <div className="list-manage-row"><span>Status</span><span style={{ fontWeight: 600, color: RETURN_STATUS_COLORS[ret.status] }}>{ret.status}</span></div>
+          <div className="list-manage-row"><span>Reason</span><span>{ret.reason}</span></div>
+          {ret.reason_note && <div className="list-manage-row"><span>Details</span><span>{ret.reason_note}</span></div>}
+          {ret.inspection_outcome && <div className="list-manage-row"><span>Inspection</span><span>{ret.inspection_outcome}</span></div>}
+          {ret.resolution && <div className="list-manage-row"><span>Resolution</span><span>{ret.resolution}{ret.resolution === 'Refund' && ret.refund_amount ? ` — ₦${Number(ret.refund_amount).toLocaleString()}` : ''}</span></div>}
+          {ret.rejection_note && <div className="list-manage-row"><span>Rejection note</span><span>{ret.rejection_note}</span></div>}
+        </div>
+
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+
+        {!canManage && !['Completed', 'Rejected'].includes(ret.status) && (
+          <p style={{ fontSize: '12px', color: '#8A93A0' }}>Only admin or inventory can move this forward.</p>
+        )}
+
+        {canManage && ret.status === 'Requested' && showReject && (
+          <>
+            <label style={{ marginTop: 0 }}>Rejection note (optional)</label>
+            <input value={rejectionNote} onChange={e => setRejectionNote(e.target.value)} placeholder="Why this isn't eligible" />
+          </>
+        )}
+
+        {canManage && ret.status === 'Inspection' && (
+          <>
+            <label style={{ marginTop: 0 }}>Condition</label>
+            <select value={inspectionOutcome} onChange={e => setInspectionOutcome(e.target.value)}>
+              <option value="Sellable">Sellable — return to stock</option>
+              <option value="Damaged">Damaged — write off</option>
+            </select>
+            <label>Resolution</label>
+            <select value={resolution} onChange={e => setResolution(e.target.value)}>
+              <option value="Refund">Refund</option>
+              <option value="Exchange">Exchange</option>
+            </select>
+            {resolution === 'Refund' ? (
+              <>
+                <label>Refund amount (₦)</label>
+                <input type="number" min="0" value={refundAmount} onChange={e => setRefundAmount(e.target.value)} />
+              </>
+            ) : (
+              <>
+                <label>Exchange for</label>
+                <select value={exchangeTarget} onChange={e => setExchangeTarget(e.target.value)}>
+                  <option value="">Choose…</option>
+                  {exchangeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </>
+            )}
+          </>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={busy}>Close</button>
+          {canManage && ret.status === 'Requested' && !showReject && (
+            <>
+              <button className="btn" onClick={() => setShowReject(true)} disabled={busy}>Reject</button>
+              <button className="btn primary" onClick={approve} disabled={busy}>Approve</button>
+            </>
+          )}
+          {canManage && ret.status === 'Requested' && showReject && (
+            <button className="btn primary" onClick={reject} disabled={busy}>Confirm reject</button>
+          )}
+          {canManage && ret.status === 'Approved' && (
+            <button className="btn primary" onClick={markReceived} disabled={busy}>Mark product received</button>
+          )}
+          {canManage && ret.status === 'Product Received' && (
+            <button className="btn primary" onClick={sendToInspection} disabled={busy}>Send to inspection</button>
+          )}
+          {canManage && ret.status === 'Inspection' && (
+            <button className="btn primary" onClick={saveInspection} disabled={busy}>{busy ? 'Saving…' : 'Save & continue'}</button>
+          )}
+          {canManage && ret.status === 'Refund/Exchange' && (
+            <button className="btn primary" onClick={complete} disabled={busy}>Mark completed</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
