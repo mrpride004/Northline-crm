@@ -510,7 +510,7 @@ function DashboardInner() {
 
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
-        {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} />}
+        {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} onNavigateFinance={() => setPage('finance')} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
@@ -523,7 +523,7 @@ function DashboardInner() {
         {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={reportOrders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
         {page === 'faileddeliveries' && (profile.role === 'staff' || profile.role === 'dispatch') && <FailedDeliveriesPage orders={reportOrders} products={products} productSets={productSets} packages={packages} profiles={profiles} profile={profile} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={reportOrders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
-        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} />}
+        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} profile={profile} upsellsByOrder={upsellsByOrder} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
@@ -548,10 +548,11 @@ export default function Dashboard() {
   );
 }
 
-function AdminOverview({ orders, products, profiles }) {
+function AdminOverview({ orders, products, profiles, onNavigateFinance }) {
   const active = orders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length;
   const delivered = orders.filter(o => o.status === 'Delivered').length;
   const unassigned = orders.filter(o => !o.staff_id).length;
+  const outstandingPayments = orders.filter(o => o.payment_status !== 'Paid' && o.status !== 'Cancelled').length;
   const staffList = profiles.filter(p => p.role !== 'admin');
 
   return (
@@ -564,6 +565,7 @@ function AdminOverview({ orders, products, profiles }) {
         <div className="stat"><div className="stat-num">{active}</div><div className="stat-label">In progress</div></div>
         <div className="stat"><div className="stat-num">{delivered}</div><div className="stat-label">Delivered</div></div>
         <div className="stat"><div className="stat-num">{unassigned}</div><div className="stat-label">Unassigned</div></div>
+        <div className="stat" style={{ cursor: 'pointer' }} onClick={onNavigateFinance}><div className="stat-num">{outstandingPayments}</div><div className="stat-label">Outstanding payments →</div></div>
       </div>
       <div className="row2" style={{ gap: '16px', alignItems: 'flex-start' }}>
         <div style={{ flex: 1 }}>

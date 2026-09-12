@@ -4239,18 +4239,98 @@ const EXPENSE_CATEGORIES = [
   { key: 'other', label: 'Other overhead' },
 ];
 
-export function FinanceHub({ products, productSets, packages, orders, profiles, session }) {
+export function FinanceHub({ products, productSets, packages, orders, profiles, session, profile, upsellsByOrder }) {
   const [tab, setTab] = useState('profitability');
+  const outstandingCount = orders.filter(o => o.payment_status !== 'Paid' && o.status !== 'Cancelled').length;
   return (
     <div>
       <div className="product-tabs" style={{ marginBottom: '18px' }}>
         <span className={'ptab' + (tab === 'profitability' ? ' active' : '')} onClick={() => setTab('profitability')}>Profitability</span>
+        <span className={'ptab' + (tab === 'outstanding' ? ' active' : '')} onClick={() => setTab('outstanding')}>Outstanding payments{outstandingCount > 0 ? ` (${outstandingCount})` : ''}</span>
         <span className={'ptab' + (tab === 'expenses' ? ' active' : '')} onClick={() => setTab('expenses')}>Expenses</span>
         <span className={'ptab' + (tab === 'costs' ? ' active' : '')} onClick={() => setTab('costs')}>Product costs</span>
       </div>
       {tab === 'profitability' && <ProfitabilityPage products={products} productSets={productSets} packages={packages} orders={orders} />}
+      {tab === 'outstanding' && <OutstandingPaymentsPage orders={orders} profiles={profiles} upsellsByOrder={upsellsByOrder} profile={profile} />}
       {tab === 'expenses' && <ExpensesPage products={products} productSets={productSets} profiles={profiles} session={session} />}
       {tab === 'costs' && <ProductCostsPage products={products} />}
+    </div>
+  );
+}
+
+// ---------- Outstanding / pending payments — money not yet confirmed received ----------
+// Delivered orders that haven't been marked Paid are the urgent case (goods
+// already handed over); Partial and not-yet-delivered orders are shown too
+// so admin has one place that answers "who still owes us money".
+function OutstandingPaymentsPage({ orders, profiles, upsellsByOrder, profile }) {
+  const [busyId, setBusyId] = useState(null);
+  const [filter, setFilter] = useState('all'); // all | delivered | partial | pending
+
+  const unpaid = orders.filter(o => o.payment_status !== 'Paid' && o.status !== 'Cancelled');
+  const rows = unpaid.map(o => {
+    const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
+    return { order: o, amount: current.amount, bucket: o.status === 'Delivered' ? 'delivered' : (o.payment_status === 'Partial' ? 'partial' : 'pending') };
+  }).sort((a, b) => new Date(b.order.created_at) - new Date(a.order.created_at));
+
+  const filtered = filter === 'all' ? rows : rows.filter(r => r.bucket === filter);
+  const totalOutstanding = rows.reduce((s, r) => s + r.amount, 0);
+  const deliveredOutstanding = rows.filter(r => r.bucket === 'delivered').reduce((s, r) => s + r.amount, 0);
+  const partialCount = rows.filter(r => r.bucket === 'partial').length;
+  const pendingCount = rows.filter(r => r.bucket === 'pending').length;
+
+  const personName = id => (profiles.find(p => p.id === id) || {}).full_name || '—';
+
+  async function markPaid(o) {
+    setBusyId(o.id);
+    try {
+      await supabase.from('orders').update({ payment_status: 'Paid' }).eq('id', o.id);
+      await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Payment confirmed — marked as Paid.' });
+      await recordCommissionForOrder(o);
+      await recordFreeCommissionForOrder(o);
+      await supabase.rpc('sync_upsells_for_order', { p_order_id: o.id });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Outstanding payments</h1><p className="page-sub">Every order that isn't marked Paid yet — who owes what, and since when.</p></div>
+      </div>
+      <div className="stats" style={{ marginBottom: '18px' }}>
+        <div className="stat"><div className="stat-num">₦{totalOutstanding.toLocaleString()}</div><div className="stat-label">Total outstanding</div></div>
+        <div className="stat"><div className="stat-num">₦{deliveredOutstanding.toLocaleString()}</div><div className="stat-label">Delivered but unpaid — most urgent</div></div>
+        <div className="stat"><div className="stat-num">{partialCount}</div><div className="stat-label">Partial payments</div></div>
+        <div className="stat"><div className="stat-num">{pendingCount}</div><div className="stat-label">Not yet delivered</div></div>
+      </div>
+      <div className="product-tabs" style={{ marginBottom: '14px' }}>
+        <span className={'ptab' + (filter === 'all' ? ' active' : '')} onClick={() => setFilter('all')}>All ({rows.length})</span>
+        <span className={'ptab' + (filter === 'delivered' ? ' active' : '')} onClick={() => setFilter('delivered')}>Delivered, unpaid ({rows.filter(r => r.bucket === 'delivered').length})</span>
+        <span className={'ptab' + (filter === 'partial' ? ' active' : '')} onClick={() => setFilter('partial')}>Partial ({partialCount})</span>
+        <span className={'ptab' + (filter === 'pending' ? ' active' : '')} onClick={() => setFilter('pending')}>Pending delivery ({pendingCount})</span>
+      </div>
+      {filtered.length === 0 ? (
+        <div className="empty">Nothing outstanding here — all clear.</div>
+      ) : (
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Staff</th><th>Dispatch</th><th>Status</th><th>Amount</th><th>Since</th><th></th></tr></thead>
+          <tbody>
+            {filtered.map(({ order: o, amount }) => (
+              <tr key={o.id}>
+                <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
+                <td>{o.customer}</td>
+                <td>{o.staff_id ? personName(o.staff_id) : '—'}</td>
+                <td>{o.dispatch_id ? personName(o.dispatch_id) : '—'}</td>
+                <td><span className={'pill ' + pillClass(o.status)}>{o.status}</span></td>
+                <td style={{ fontWeight: 600 }}>₦{amount.toLocaleString()} <span style={{ fontSize: '10.5px', fontWeight: 400, color: '#8A93A0' }}>({o.payment_status || 'Unpaid'})</span></td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.created_at).toLocaleDateString()}</td>
+                <td><button className="link-btn" disabled={busyId === o.id} onClick={() => markPaid(o)}>{busyId === o.id ? 'Saving…' : 'Mark Paid'}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
