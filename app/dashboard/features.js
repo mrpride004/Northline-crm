@@ -2073,17 +2073,220 @@ export function ProductVariantsModal({ product, onClose }) {
   );
 }
 
-export function InventoryPage({ products, orders, profiles, agentStock, refresh }) {
+// Orders still in the pipeline (not yet Delivered or Cancelled) have
+// already committed stock even though it hasn't left the warehouse yet —
+// this is what "reserved" means throughout the inventory subsystem.
+const RESERVING_STATUSES = STATUSES.filter(s => s !== 'Delivered' && s !== 'Cancelled');
+
+function reservedFor(orders, productId) {
+  return orders
+    .filter(o => o.product_id === productId && RESERVING_STATUSES.includes(o.status))
+    .reduce((sum, o) => sum + (o.quantity || 1), 0);
+}
+
+export function ReceiveStockModal({ products, suppliers, onClose, refresh }) {
+  const [productId, setProductId] = useState(products[0]?.id || '');
+  const [quantity, setQuantity] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit() {
+    const qty = parseInt(quantity, 10);
+    if (!productId || !qty || qty <= 0) { setError('Pick a product and a quantity greater than 0.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const { error: err } = await supabase.rpc('adjust_stock', {
+        p_product_id: productId, p_delta: qty, p_movement_type: 'received',
+        p_reason: note.trim() || 'Stock received', p_supplier_id: supplierId || null,
+      });
+      if (err) { setError(err.message); return; }
+      refresh();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Receive stock</h3>
+        <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>Log new stock coming in, optionally against a supplier on file.</p>
+        <label style={{ marginTop: 0 }}>Product</label>
+        <select value={productId} onChange={e => setProductId(e.target.value)}>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <label>Quantity received</label>
+        <input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="e.g. 50" />
+        <label>Supplier (optional)</label>
+        <select value={supplierId} onChange={e => setSupplierId(e.target.value)}>
+          <option value="">No supplier on file</option>
+          {(suppliers || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <label>Note (optional)</label>
+        <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. invoice number" />
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={submit} disabled={saving}>{saving ? 'Saving…' : 'Log stock received'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ReportDamageModal({ products, onClose, refresh }) {
+  const [productId, setProductId] = useState(products[0]?.id || '');
+  const [quantity, setQuantity] = useState('');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit() {
+    const qty = parseInt(quantity, 10);
+    if (!productId || !qty || qty <= 0) { setError('Pick a product and a quantity greater than 0.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const { error: err } = await supabase.rpc('adjust_stock', {
+        p_product_id: productId, p_delta: -qty, p_movement_type: 'damaged',
+        p_reason: note.trim() || 'Damaged / lost stock',
+      });
+      if (err) { setError(err.message); return; }
+      refresh();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3>Report damaged or lost stock</h3>
+        <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>Write off stock that's damaged, expired, or missing — this removes it from what's countable as available.</p>
+        <label style={{ marginTop: 0 }}>Product</label>
+        <select value={productId} onChange={e => setProductId(e.target.value)}>
+          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <label>Quantity to write off</label>
+        <input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="e.g. 3" />
+        <label>Reason (optional)</label>
+        <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. water damage in storage" />
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={submit} disabled={saving}>{saving ? 'Saving…' : 'Write off stock'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function SuppliersPage({ suppliers, refresh }) {
+  const [editing, setEditing] = useState(null); // {} for new, or a supplier row
+  const [name, setName] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  function startEdit(s) {
+    setEditing(s || {});
+    setName(s?.name || ''); setContactName(s?.contact_name || ''); setPhone(s?.phone || ''); setEmail(s?.email || ''); setNotes(s?.notes || '');
+    setError('');
+  }
+
+  async function save() {
+    if (!name.trim()) { setError('Give this supplier a name.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const payload = { name: name.trim(), contact_name: contactName.trim() || null, phone: phone.trim() || null, email: email.trim() || null, notes: notes.trim() || null };
+      const { error: err } = editing.id
+        ? await supabase.from('suppliers').update(payload).eq('id', editing.id)
+        : await supabase.from('suppliers').insert(payload);
+      if (err) { setError(err.message); return; }
+      setEditing(null);
+      refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(s) {
+    const { error: err } = await supabase.from('suppliers').delete().eq('id', s.id);
+    if (err) { alert('Could not remove this supplier — it already has stock receipts logged against it.'); return; }
+    refresh();
+  }
+
+  return (
+    <div>
+      <div className="topbar" style={{ borderLeft: '4px solid #C6862F', paddingLeft: '14px' }}>
+        <div><h1 className="page-title">Suppliers</h1><p className="page-sub">Keep a contact record for everyone you buy stock from — pick one when logging received stock.</p></div>
+        <button className="btn primary" onClick={() => startEdit(null)}>+ New supplier</button>
+      </div>
+      <div className="list-manage" style={{ marginBottom: '18px' }}>
+        {suppliers.map(s => (
+          <div key={s.id} className="list-manage-row">
+            <span>
+              <strong>{s.name}</strong>{' '}
+              <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
+                {[s.contact_name, s.phone, s.email].filter(Boolean).join(' · ') || 'No contact details on file'}
+              </span>
+            </span>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="link-btn" onClick={() => startEdit(s)}>Edit</button>
+              <button className="tiny-x" onClick={() => remove(s)}>Remove</button>
+            </div>
+          </div>
+        ))}
+        {suppliers.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No suppliers yet.</div>}
+      </div>
+      {editing && (
+        <div className="overlay" onClick={() => setEditing(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3>{editing.id ? 'Edit supplier' : 'New supplier'}</h3>
+            <label style={{ marginTop: 0 }}>Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Company or person" />
+            <label>Contact name (optional)</label>
+            <input value={contactName} onChange={e => setContactName(e.target.value)} />
+            <label>Phone (optional)</label>
+            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="080..." />
+            <label>Email (optional)</label>
+            <input value={email} onChange={e => setEmail(e.target.value)} />
+            <label>Notes (optional)</label>
+            <input value={notes} onChange={e => setNotes(e.target.value)} />
+            {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save supplier'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function InventoryPage({ products, orders, profiles, agentStock, suppliers, refresh }) {
   const [exactEdits, setExactEdits] = useState({});
   const [addAmounts, setAddAmounts] = useState({});
   const [movements, setMovements] = useState([]);
+  const [movementFilter, setMovementFilter] = useState('all');
+  const [receiving, setReceiving] = useState(false);
+  const [reportingDamage, setReportingDamage] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(60);
-      setMovements(data || []);
-    })();
-  }, []);
+  useEffect(() => { loadMovements(); }, []);
+  async function loadMovements() {
+    const { data } = await supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(80);
+    setMovements(data || []);
+  }
 
   async function addStock(p) {
     const amt = parseInt(addAmounts[p.id], 10);
@@ -2091,6 +2294,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
     await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: amt });
     setAddAmounts({ ...addAmounts, [p.id]: '' });
     refresh();
+    loadMovements();
   }
   async function subtractStock(p) {
     const amt = parseInt(addAmounts[p.id], 10);
@@ -2098,6 +2302,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
     await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: -amt });
     setAddAmounts({ ...addAmounts, [p.id]: '' });
     refresh();
+    loadMovements();
   }
   async function setExact(p) {
     const val = parseInt(exactEdits[p.id], 10);
@@ -2106,6 +2311,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
     if (delta !== 0) await supabase.rpc('adjust_stock', { p_product_id: p.id, p_delta: delta });
     setExactEdits({ ...exactEdits, [p.id]: '' });
     refresh();
+    loadMovements();
   }
   async function setThreshold(p, val) {
     const t = parseInt(val, 10);
@@ -2114,21 +2320,36 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
     refresh();
   }
 
+  const MOVEMENT_LABELS = { received: 'Received', sold: 'Sold', returned: 'Returned', damaged: 'Damaged', transfer: 'Agent transfer', adjustment: 'Manual adjustment' };
+  const MOVEMENT_COLORS = { received: '#2E7D32', sold: '#4A7FBF', returned: '#8A5EBF', damaged: '#B0483F', transfer: '#C6862F', adjustment: '#8A93A0' };
+  const filteredMovements = movementFilter === 'all' ? movements : movements.filter(m => (m.movement_type || 'adjustment') === movementFilter);
+
   return (
     <div>
       <div className="topbar" style={{ borderLeft: '4px solid #4A9B6E', paddingLeft: '14px' }}>
-        <div><h1 className="page-title">Inventory</h1><p className="page-sub">Stock automatically drops as orders come in. Any addition below adds to what's already there — use "Set exact" only when you want to replace the number entirely.</p></div>
+        <div><h1 className="page-title">Inventory</h1><p className="page-sub">Stock automatically drops as orders are delivered and comes back if a delivered order is reversed. "Reserved" is what's already committed to orders still in progress — "Available" is what's actually free to promise a new customer.</p></div>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button className="btn" onClick={() => setReceiving(true)}>+ Receive stock</button>
+          <button className="btn" onClick={() => setReportingDamage(true)}>Report damaged/lost</button>
+        </div>
       </div>
       <table>
-        <thead><tr><th>Product</th><th>In stock</th><th>Low stock alert below</th><th>Add / subtract quantity</th><th>Set exact</th></tr></thead>
+        <thead><tr><th>Product</th><th>In stock</th><th>Reserved</th><th>Available</th><th>Low stock alert below</th><th>Add / subtract quantity</th><th>Set exact</th></tr></thead>
         <tbody>
           {products.map(p => {
-            const low = p.stock_quantity <= p.low_stock_threshold;
+            const reserved = reservedFor(orders, p.id);
+            const available = Math.max(0, p.stock_quantity - reserved);
+            const outOfStock = available <= 0;
+            const low = !outOfStock && available <= p.low_stock_threshold;
             return (
               <tr key={p.id}>
                 <td>{p.name}</td>
+                <td>{p.stock_quantity} units</td>
+                <td style={{ color: reserved > 0 ? '#8A93A0' : undefined }}>{reserved}</td>
                 <td>
-                  <span className={low ? 'pill Cancelled' : 'pill Delivered'}>{p.stock_quantity} units</span>
+                  <span className={outOfStock ? 'pill Cancelled' : low ? 'pill New' : 'pill Delivered'}>
+                    {available} {outOfStock ? '— OUT OF STOCK' : low ? '— LOW' : ''}
+                  </span>
                 </td>
                 <td>
                   <input
@@ -2160,7 +2381,7 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
               </tr>
             );
           })}
-          {products.length === 0 && <tr><td colSpan="5" className="empty">Add products first.</td></tr>}
+          {products.length === 0 && <tr><td colSpan="7" className="empty">Add products first.</td></tr>}
         </tbody>
       </table>
 
@@ -2206,17 +2427,25 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
         );
       })()}
 
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 10px' }}>Recent stock activity</h3>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '28px 0 10px', flexWrap: 'wrap', gap: '10px' }}>
+        <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: 0 }}>Recent stock activity</h3>
+        <select value={movementFilter} onChange={e => setMovementFilter(e.target.value)} style={{ fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+          <option value="all">All types</option>
+          {Object.entries(MOVEMENT_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
+      </div>
       <table>
-        <thead><tr><th>Date</th><th>Product</th><th>Change</th><th>Reason</th></tr></thead>
+        <thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Change</th><th>Reason</th></tr></thead>
         <tbody>
-          {movements.length === 0 && <tr><td colSpan="4" className="empty">No stock changes recorded yet.</td></tr>}
-          {movements.map(m => {
+          {filteredMovements.length === 0 && <tr><td colSpan="5" className="empty">No stock changes recorded yet.</td></tr>}
+          {filteredMovements.map(m => {
             const prod = products.find(p => p.id === m.product_id);
+            const type = m.movement_type || 'adjustment';
             return (
               <tr key={m.id}>
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(m.created_at).toLocaleString()}</td>
-                <td>{prod ? prod.name : '—'}</td>
+                <td>{prod ? prod.name : '—'}{m.agent_id ? ' (agent)' : ''}</td>
+                <td><span className="pill" style={{ background: MOVEMENT_COLORS[type] + '22', color: MOVEMENT_COLORS[type] }}>{MOVEMENT_LABELS[type] || type}</span></td>
                 <td><span className={'pill ' + (m.delta >= 0 ? 'Delivered' : 'Cancelled')}>{m.delta >= 0 ? '+' : ''}{m.delta}</span></td>
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{m.reason || '—'}</td>
               </tr>
@@ -2224,6 +2453,8 @@ export function InventoryPage({ products, orders, profiles, agentStock, refresh 
           })}
         </tbody>
       </table>
+      {receiving && <ReceiveStockModal products={products} suppliers={suppliers || []} onClose={() => setReceiving(false)} refresh={() => { refresh(); loadMovements(); }} />}
+      {reportingDamage && <ReportDamageModal products={products} onClose={() => setReportingDamage(false)} refresh={() => { refresh(); loadMovements(); }} />}
     </div>
   );
 }
@@ -3764,16 +3995,18 @@ export function CommissionHub({ profiles, orders, products, packages, productSet
 }
 
 // ---------- Unified Inventory hub: stock levels + agent stock together ----------
-export function InventoryHub({ products, orders, profiles, agentStock, refresh }) {
+export function InventoryHub({ products, orders, profiles, agentStock, suppliers, refresh }) {
   const [tab, setTab] = useState('inventory');
   return (
     <div>
       <div className="product-tabs" style={{ marginBottom: '18px' }}>
         <span className={'ptab' + (tab === 'inventory' ? ' active' : '')} onClick={() => setTab('inventory')}>Inventory</span>
         <span className={'ptab' + (tab === 'agentstock' ? ' active' : '')} onClick={() => setTab('agentstock')}>Agent stock</span>
+        <span className={'ptab' + (tab === 'suppliers' ? ' active' : '')} onClick={() => setTab('suppliers')}>Suppliers</span>
       </div>
-      {tab === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refresh} />}
+      {tab === 'inventory' && <InventoryPage products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refresh} />}
       {tab === 'agentstock' && <AgentStockPage profiles={profiles} products={products} agentStock={agentStock} refresh={refresh} />}
+      {tab === 'suppliers' && <SuppliersPage suppliers={suppliers || []} refresh={refresh} />}
     </div>
   );
 }

@@ -78,6 +78,7 @@ function DashboardInner() {
   const [productSets, setProductSets] = useState([]);
   const [productCategories, setProductCategories] = useState([]);
   const [productVariants, setProductVariants] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -317,7 +318,7 @@ function DashboardInner() {
 
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }, { data: cats }, { data: variants }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }, { data: cats }, { data: variants }, { data: sups }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -332,10 +333,12 @@ function DashboardInner() {
       supabase.from('role_permission_defaults').select('*'),
       supabase.from('product_categories').select('*').order('name'),
       supabase.from('product_variants').select('*').order('created_at'),
+      supabase.from('suppliers').select('*').order('name'),
     ]);
     setProducts(prod || []);
     setProductCategories(cats || []);
     setProductVariants(variants || []);
+    setSuppliers(sups || []);
     setOrders(ord || []);
     setProfiles(profs || []);
     const rdMap = {};
@@ -519,7 +522,7 @@ function DashboardInner() {
         {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} onNavigateFinance={() => setPage('finance')} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} productCategories={productCategories} productVariants={productVariants} refresh={refreshAll} />}
-        {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
+        {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
         {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} latestRemarks={latestRemarks} />}
@@ -540,7 +543,7 @@ function DashboardInner() {
 
         {isSubmitter && page === 'dashboard' && <SubmitterView profile={profile} products={products} orders={orders} refresh={refreshAll} />}
 
-        {isInventoryManager && page === 'dashboard' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
+        {isInventoryManager && page === 'dashboard' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} refresh={refreshAll} />}
       </div>
     </div>
   );
@@ -1054,18 +1057,23 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   async function adjustStockForOrder(o, direction) {
     const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
     const qtyDelta = direction * (current.quantity || 1);
+    // direction -1 = order just delivered, stock leaves ("sold"); direction
+    // +1 = a delivered order got reversed (re-cancelled or deleted), stock
+    // comes back ("returned") — tags every resulting stock_movements row
+    // so the inventory log and reports can tell the two apart.
+    const movementType = direction < 0 ? 'sold' : 'returned';
     if (current.setId) {
-      await supabase.rpc('adjust_stock_for_set', { p_set_id: current.setId, p_delta_units: qtyDelta });
+      await supabase.rpc('adjust_stock_for_set', { p_set_id: current.setId, p_delta_units: qtyDelta, p_movement_type: movementType, p_order_id: o.id });
       if (o.dispatch_id) {
-        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: current.setId, p_delta_units: qtyDelta });
+        await supabase.rpc('adjust_agent_stock_for_set', { p_agent_id: o.dispatch_id, p_set_id: current.setId, p_delta_units: qtyDelta, p_movement_type: movementType, p_order_id: o.id });
       }
       return; // sets don't carry a package/gift in this version
     }
     const product = products.find(p => p.id === current.productId);
     if (product) {
-      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: qtyDelta });
+      await supabase.rpc('adjust_stock', { p_product_id: product.id, p_delta: qtyDelta, p_movement_type: movementType, p_order_id: o.id });
       if (o.dispatch_id) {
-        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: qtyDelta });
+        await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: product.id, p_delta: qtyDelta, p_movement_type: movementType, p_order_id: o.id });
       }
     }
     // Free gifts only ever apply to the ORIGINAL package, never to an upsell replacement.
@@ -1073,9 +1081,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       const pkg = (packages || []).find(p => p.id === o.package_id);
       if (pkg && pkg.gift_product_id) {
         const giftDelta = direction * o.gift_quantity;
-        await supabase.rpc('adjust_stock', { p_product_id: pkg.gift_product_id, p_delta: giftDelta });
+        await supabase.rpc('adjust_stock', { p_product_id: pkg.gift_product_id, p_delta: giftDelta, p_movement_type: movementType, p_order_id: o.id });
         if (o.dispatch_id) {
-          await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: pkg.gift_product_id, p_delta: giftDelta });
+          await supabase.rpc('adjust_agent_stock', { p_agent_id: o.dispatch_id, p_product_id: pkg.gift_product_id, p_delta: giftDelta, p_movement_type: movementType, p_order_id: o.id });
         }
       }
     }
