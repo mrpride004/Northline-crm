@@ -1254,6 +1254,33 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
     setActionsOpenFor(null);
   }
 
+  // WhatsApp's Business API can only send free text within a 24h customer
+  // service window, or via a template Meta has separately pre-approved — a
+  // review-request template isn't one we have, so instead of a silent no-op
+  // this opens a pre-filled wa.me chat for the person to send themselves.
+  // SMS (Termii) has no such restriction and sends the same wording directly.
+  async function requestReview(o) {
+    if (!o.phone) return;
+    if (o.review_requested_at) {
+      const hrs = Math.floor((Date.now() - new Date(o.review_requested_at).getTime()) / 3600000);
+      const ago = hrs < 1 ? 'less than an hour ago' : hrs < 24 ? `${hrs}h ago` : `${Math.floor(hrs / 24)}d ago`;
+      if (!confirm(`A review was already requested from this customer ${ago}. Send another request?`)) { setActionsOpenFor(null); return; }
+    }
+    const template = settings?.review_request_message || "Hi {customer}, thanks for shopping with us! If you have a moment, we'd really appreciate a quick review: {review_link} — Trailblazer";
+    const message = template.replace(/\{customer\}/g, o.customer || 'there').replace(/\{review_link\}/g, settings?.review_link || '');
+    const digits = (o.phone || '').replace(/\D/g, '');
+    if (digits) window.open(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+    await sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, sendSms: true, sendWhatsapp: false, customMessage: message });
+    await supabase.from('orders').update({ review_requested_at: new Date().toISOString() }).eq('id', o.id);
+    await logEvent({ order_id: o.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: 'Review requested from customer.' });
+    const adminIds = (profiles || []).filter(p => p.role === 'admin').map(p => p.id);
+    if (adminIds.length > 0) {
+      await notifyUsers(session, { userIds: adminIds, type: 'general', title: 'Review requested', body: `${o.customer} — order ${o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}`, orderId: o.id });
+    }
+    setActionsOpenFor(null);
+    refresh();
+  }
+
   async function withdrawUpsell(u) {
     const { error } = await supabase.rpc('withdraw_upsell', { p_upsell_id: u.id });
     if (error) { alert('Unable to withdraw this right now — it may have already moved on to the next step.'); return; }
@@ -1475,6 +1502,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       {isAdmin && o.phone && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { const itemLabel = o.set_id ? setName(o.set_id) : o.package_id ? pkgName(o.package_id) : prodName(o.product_id); sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, itemLabel, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
                       )}
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Delivered' && o.phone && (
+                        <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => requestReview(o)}>{o.review_requested_at ? 'Request review again' : 'Request review'}</div>
+                      )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '7px 10px', cursor: 'pointer', fontSize: '12.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>
                       )}
@@ -1580,6 +1610,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                       <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => copyOrderInfo(o)}>Copy full order info</div>
                       {isAdmin && o.phone && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { const itemLabel = o.set_id ? setName(o.set_id) : o.package_id ? pkgName(o.package_id) : prodName(o.product_id); sendConfirmation({ phone: o.phone, customerName: o.customer, orderId: o.id, itemLabel, sendSms: true, sendWhatsapp: true }); setActionsOpenFor(null); }}>Send confirmation</div>
+                      )}
+                      {(isAdmin || (myRole === 'staff' && o.staff_id === myId)) && o.status === 'Delivered' && o.phone && (
+                        <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => requestReview(o)}>{o.review_requested_at ? 'Request review again' : 'Request review'}</div>
                       )}
                       {isAdmin && dispatchCompanies && dispatchCompanies.length > 0 && (
                         <div style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '13.5px' }} onClick={() => { setForwarding(o); setActionsOpenFor(null); }}>Forward to external</div>

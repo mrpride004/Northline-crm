@@ -352,11 +352,11 @@ export function orderTotal(o, upsells) {
   return current.amount - fee;
 }
 
-export async function sendConfirmation({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp }) {
+export async function sendConfirmation({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp, customMessage }) {
   try {
     await fetch('/api/send-confirmation', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp }),
+      body: JSON.stringify({ phone, customerName, orderId, itemLabel, sendSms, sendWhatsapp, customMessage }),
     });
   } catch (e) { console.error('Confirmation send failed', e); }
 }
@@ -1270,6 +1270,25 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
     setTimeout(() => setConfirmMessageSaved(false), 2500);
   }
 
+  const DEFAULT_REVIEW_TEMPLATE = "Hi {customer}, thanks for shopping with us! If you have a moment, we'd really appreciate a quick review: {review_link} — Trailblazer";
+  const [reviewLink, setReviewLink] = useState(settings?.review_link || '');
+  const [reviewMessage, setReviewMessage] = useState(settings?.review_request_message || DEFAULT_REVIEW_TEMPLATE);
+  const [savingReviewSettings, setSavingReviewSettings] = useState(false);
+  const [reviewSettingsSaved, setReviewSettingsSaved] = useState(false);
+  useEffect(() => { setReviewLink(settings?.review_link || ''); }, [settings?.review_link]);
+  useEffect(() => { setReviewMessage(settings?.review_request_message || DEFAULT_REVIEW_TEMPLATE); }, [settings?.review_request_message]);
+  async function saveReviewSettings() {
+    setSavingReviewSettings(true);
+    await supabase.from('app_settings').upsert([
+      { key: 'review_link', value: reviewLink.trim() },
+      { key: 'review_request_message', value: reviewMessage.trim() || DEFAULT_REVIEW_TEMPLATE },
+    ]);
+    await refresh();
+    setSavingReviewSettings(false);
+    setReviewSettingsSaved(true);
+    setTimeout(() => setReviewSettingsSaved(false), 2500);
+  }
+
   useEffect(() => { loadOrderSources(); }, []);
   async function loadOrderSources() {
     const { data } = await supabase.from('landing_page_sources').select('*').order('created_at', { ascending: false });
@@ -1503,6 +1522,33 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
         </p>
         <button className="btn" onClick={saveConfirmMessage} disabled={savingConfirmMessage}>
           {savingConfirmMessage ? 'Saving…' : confirmMessageSaved ? '✓ Saved' : 'Save message'}
+        </button>
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Review requests</h3>
+      <p style={{ fontSize: '12.5px', color: '#8A93A0', marginBottom: '10px' }}>
+        "Request review" on a Delivered order sends this message by SMS (needs Termii keys) and always opens a
+        pre-filled WhatsApp chat for staff to send themselves — WhatsApp's Business API can't send free-text
+        messages like this without a separately Meta-approved template, so the manual link is the reliable option
+        here.
+      </p>
+      <div style={{ marginBottom: '14px' }}>
+        <label style={{ marginTop: 0 }}>Review link</label>
+        <input value={reviewLink} onChange={e => setReviewLink(e.target.value)} placeholder="https://g.page/r/your-business/review" />
+      </div>
+      <div style={{ marginBottom: '22px' }}>
+        <label>Review request message</label>
+        <textarea
+          value={reviewMessage}
+          onChange={e => setReviewMessage(e.target.value)}
+          rows={3}
+          style={{ width: '100%', fontFamily: 'inherit' }}
+        />
+        <p style={{ fontSize: '11.5px', color: '#8A93A0', margin: '4px 0 8px' }}>
+          Placeholders: <code>{'{customer}'}</code> name, <code>{'{review_link}'}</code> the link above.
+        </p>
+        <button className="btn" onClick={saveReviewSettings} disabled={savingReviewSettings}>
+          {savingReviewSettings ? 'Saving…' : reviewSettingsSaved ? '✓ Saved' : 'Save message'}
         </button>
       </div>
 
