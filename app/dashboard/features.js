@@ -4773,7 +4773,7 @@ const EXPENSE_CATEGORIES = [
   { key: 'other', label: 'Other overhead' },
 ];
 
-export function FinanceHub({ products, productSets, packages, orders, profiles, session, profile, upsellsByOrder }) {
+export function FinanceHub({ products, productSets, packages, orders, profiles, session, profile, upsellsByOrder, remittances, refresh }) {
   const [tab, setTab] = useState('profitability');
   const outstandingCount = orders.filter(o => o.payment_status !== 'Paid' && o.status !== 'Cancelled').length;
   return (
@@ -4781,11 +4781,13 @@ export function FinanceHub({ products, productSets, packages, orders, profiles, 
       <div className="product-tabs" style={{ marginBottom: '18px' }}>
         <span className={'ptab' + (tab === 'profitability' ? ' active' : '')} onClick={() => setTab('profitability')}>Profitability</span>
         <span className={'ptab' + (tab === 'outstanding' ? ' active' : '')} onClick={() => setTab('outstanding')}>Outstanding payments{outstandingCount > 0 ? ` (${outstandingCount})` : ''}</span>
+        <span className={'ptab' + (tab === 'remittance' ? ' active' : '')} onClick={() => setTab('remittance')}>Dispatch remittance</span>
         <span className={'ptab' + (tab === 'expenses' ? ' active' : '')} onClick={() => setTab('expenses')}>Expenses</span>
         <span className={'ptab' + (tab === 'costs' ? ' active' : '')} onClick={() => setTab('costs')}>Product costs</span>
       </div>
       {tab === 'profitability' && <ProfitabilityPage products={products} productSets={productSets} packages={packages} orders={orders} />}
       {tab === 'outstanding' && <OutstandingPaymentsPage orders={orders} profiles={profiles} upsellsByOrder={upsellsByOrder} profile={profile} />}
+      {tab === 'remittance' && <RemittancePage orders={orders} profiles={profiles} upsellsByOrder={upsellsByOrder} remittances={remittances || []} profile={profile} refresh={refresh} />}
       {tab === 'expenses' && <ExpensesPage products={products} productSets={productSets} profiles={profiles} session={session} />}
       {tab === 'costs' && <ProductCostsPage products={products} />}
     </div>
@@ -4865,6 +4867,168 @@ function OutstandingPaymentsPage({ orders, profiles, upsellsByOrder, profile }) 
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// ---------- Dispatch remittance — cash a dispatch agent is holding vs has handed in ----------
+// payment_status='Paid' only means "someone confirmed this money came in" —
+// for a COD order that's the moment the agent collects cash at the door,
+// which is a different event from the agent later handing that cash to the
+// office. There's no per-order "remitted" flag for that second event on
+// purpose: agents remit accumulated cash periodically, not per delivery. So
+// "collected" is computed fresh from delivered+paid+COD orders (never
+// stored/duplicated — same principle as reserved stock in migration_v56),
+// and "outstanding" is collected minus the sum of logged remittances.
+//
+// "Delivery attempts" needs no schema either — it's read straight from the
+// existing order_events log: every status_change landing on Unreachable,
+// Rescheduled or Failed Delivery was a doorstep attempt that didn't finish
+// the job, so attempts = those events + 1 for the final outcome.
+const FAILED_ATTEMPT_STATUSES = ['Unreachable', 'Rescheduled', 'Failed Delivery'];
+
+function RemittancePage({ orders, profiles, upsellsByOrder, remittances, profile, refresh }) {
+  const [attemptEvents, setAttemptEvents] = useState([]);
+  const [loadingAttempts, setLoadingAttempts] = useState(true);
+  const [recordingFor, setRecordingFor] = useState(null); // agent object
+  const [removing, setRemoving] = useState(null); // remittance id
+
+  useEffect(() => { loadAttempts(); }, []);
+  async function loadAttempts() {
+    setLoadingAttempts(true);
+    const { data } = await supabase.from('order_events').select('order_id, to_status').eq('event_type', 'status_change').in('to_status', FAILED_ATTEMPT_STATUSES);
+    setAttemptEvents(data || []);
+    setLoadingAttempts(false);
+  }
+
+  const attemptCounts = {};
+  attemptEvents.forEach(e => { attemptCounts[e.order_id] = (attemptCounts[e.order_id] || 0) + 1; });
+
+  const dispatchAgents = profiles.filter(p => p.role === 'dispatch');
+
+  const rows = dispatchAgents.map(agent => {
+    const codDelivered = orders.filter(o => o.dispatch_id === agent.id && o.status === 'Delivered' && o.payment_status === 'Paid' && (o.payment_method || 'COD') === 'COD');
+    const collected = codDelivered.reduce((s, o) => s + getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]).amount, 0);
+    const agentRemittances = remittances.filter(r => r.dispatch_id === agent.id);
+    const remitted = agentRemittances.reduce((s, r) => s + Number(r.amount || 0), 0);
+    const outstanding = Math.max(0, collected - remitted);
+    const finished = orders.filter(o => o.dispatch_id === agent.id && (o.status === 'Delivered' || o.status === 'Cancelled'));
+    const totalAttempts = finished.reduce((s, o) => s + (attemptCounts[o.id] || 0) + 1, 0);
+    const avgAttempts = finished.length > 0 ? (totalAttempts / finished.length) : 0;
+    return { agent, codCount: codDelivered.length, collected, remitted, outstanding, avgAttempts, remittances: agentRemittances };
+  }).sort((a, b) => b.outstanding - a.outstanding);
+
+  const totalOutstanding = rows.reduce((s, r) => s + r.outstanding, 0);
+  const totalCollected = rows.reduce((s, r) => s + r.collected, 0);
+  const totalRemitted = rows.reduce((s, r) => s + r.remitted, 0);
+
+  const recentRemittances = [...remittances].sort((a, b) => new Date(b.remittance_date) - new Date(a.remittance_date) || new Date(b.created_at) - new Date(a.created_at)).slice(0, 40);
+  const agentName = id => (profiles.find(p => p.id === id) || {}).full_name || '—';
+
+  async function removeRemittance(r) {
+    if (!confirm('Remove this remittance entry? This only corrects a mistaken log — it doesn\'t change any order.')) return;
+    setRemoving(r.id);
+    await supabase.from('remittances').delete().eq('id', r.id);
+    setRemoving(null);
+    refresh();
+  }
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Dispatch remittance</h1><p className="page-sub">Cash on hand per dispatch agent from COD deliveries — what they've collected, what they've handed in, and what's still outstanding. Separate from "Outstanding payments", which tracks orders no one has confirmed receiving money for yet.</p></div>
+      </div>
+      <div className="stats" style={{ marginBottom: '18px' }}>
+        <div className="stat"><div className="stat-num">₦{totalCollected.toLocaleString()}</div><div className="stat-label">Total collected (COD, delivered)</div></div>
+        <div className="stat"><div className="stat-num">₦{totalRemitted.toLocaleString()}</div><div className="stat-label">Total remitted</div></div>
+        <div className="stat"><div className="stat-num">₦{totalOutstanding.toLocaleString()}</div><div className="stat-label">Outstanding cash</div></div>
+      </div>
+      {dispatchAgents.length === 0 ? <div className="empty">No dispatch agents yet.</div> : (
+        <table>
+          <thead><tr><th>Agent</th><th>COD delivered</th><th>Collected</th><th>Remitted</th><th>Outstanding</th><th>Avg. delivery attempts</th><th></th></tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.agent.id}>
+                <td>{r.agent.full_name}</td>
+                <td>{r.codCount}</td>
+                <td>₦{r.collected.toLocaleString()}</td>
+                <td>₦{r.remitted.toLocaleString()}</td>
+                <td style={{ fontWeight: 600, color: r.outstanding > 0 ? '#B0483F' : undefined }}>₦{r.outstanding.toLocaleString()}</td>
+                <td style={{ color: '#8A93A0' }}>{loadingAttempts ? '…' : r.avgAttempts.toFixed(1)}</td>
+                <td><button className="link-btn" onClick={() => setRecordingFor(r.agent)}>Record remittance</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '28px 0 6px' }}>Recent remittances</h3>
+      {recentRemittances.length === 0 ? <div className="empty">No remittances logged yet.</div> : (
+        <table>
+          <thead><tr><th>Date</th><th>Agent</th><th>Amount</th><th>Note</th><th>Recorded by</th><th></th></tr></thead>
+          <tbody>
+            {recentRemittances.map(r => (
+              <tr key={r.id}>
+                <td>{r.remittance_date}</td>
+                <td>{agentName(r.dispatch_id)}</td>
+                <td style={{ fontWeight: 600 }}>₦{Number(r.amount || 0).toLocaleString()}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{r.note || '—'}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{r.recorded_by_name || '—'}</td>
+                <td><button className="link-btn" disabled={removing === r.id} onClick={() => removeRemittance(r)}>{removing === r.id ? 'Removing…' : 'Remove'}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {recordingFor && (
+        <RecordRemittanceModal agent={recordingFor} profile={profile} onClose={() => { setRecordingFor(null); refresh(); }} />
+      )}
+    </div>
+  );
+}
+
+function RecordRemittanceModal({ agent, profile, onClose }) {
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { setError('Enter a valid amount.'); return; }
+    setSaving(true);
+    setError('');
+    const { error: err } = await supabase.from('remittances').insert({
+      dispatch_id: agent.id,
+      amount: amt,
+      remittance_date: date,
+      note: note.trim() || null,
+      recorded_by: profile?.id,
+      recorded_by_name: profile?.full_name,
+    });
+    setSaving(false);
+    if (err) { setError(err.message); return; }
+    onClose();
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <h3 style={{ marginTop: 0 }}>Record remittance — {agent.full_name}</h3>
+        <label>Amount received (₦)</label>
+        <input type="number" min="1" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" autoFocus />
+        <label>Date</label>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        <label>Note (optional)</label>
+        <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. cash handed in at office" />
+        {error && <p style={{ fontSize: '11.5px', color: '#B0483F' }}>{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Record remittance'}</button>
+        </div>
+      </div>
     </div>
   );
 }

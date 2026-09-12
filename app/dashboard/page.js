@@ -79,6 +79,7 @@ function DashboardInner() {
   const [productCategories, setProductCategories] = useState([]);
   const [productVariants, setProductVariants] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [remittances, setRemittances] = useState([]);
   const [latestRemarks, setLatestRemarks] = useState({});
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -318,7 +319,7 @@ function DashboardInner() {
 
   async function refreshAll() {
     lastLocalActionRef.current = Date.now();
-    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }, { data: cats }, { data: variants }, { data: sups }] = await Promise.all([
+    const [{ data: prod }, { data: ord }, { data: profs }, { data: stock }, { data: settingsRows }, { data: companies }, { data: pkgs }, { data: events }, { data: upsellRows }, { data: setRows }, { data: setItemRows }, { data: rd }, { data: cats }, { data: variants }, { data: sups }, { data: remits }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('orders').select('*').order('created_at', { ascending: false }),
       supabase.from('profiles').select('*'),
@@ -334,11 +335,13 @@ function DashboardInner() {
       supabase.from('product_categories').select('*').order('name'),
       supabase.from('product_variants').select('*').order('created_at'),
       supabase.from('suppliers').select('*').order('name'),
+      supabase.from('remittances').select('*').order('remittance_date', { ascending: false }),
     ]);
     setProducts(prod || []);
     setProductCategories(cats || []);
     setProductVariants(variants || []);
     setSuppliers(sups || []);
+    setRemittances(remits || []);
     setOrders(ord || []);
     setProfiles(profs || []);
     const rdMap = {};
@@ -532,7 +535,7 @@ function DashboardInner() {
         {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={reportOrders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
         {page === 'faileddeliveries' && (profile.role === 'staff' || profile.role === 'dispatch') && <FailedDeliveriesPage orders={reportOrders} products={products} productSets={productSets} packages={packages} profiles={profiles} profile={profile} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={reportOrders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
-        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} profile={profile} upsellsByOrder={upsellsByOrder} />}
+        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} profile={profile} upsellsByOrder={upsellsByOrder} remittances={remittances} refresh={refreshAll} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
