@@ -250,6 +250,8 @@ export async function POST(request) {
       notes: notes ? String(notes).trim() : null,
       status: 'New',
       payment_status: 'Unpaid',
+      payment_method: 'COD',
+      lead_source: 'Website',
       product_id: resolvedSetId ? null : source.product_id,
       package_id: resolvedPackageId,
       set_id: resolvedSetId,
