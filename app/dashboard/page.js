@@ -604,6 +604,8 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
   const [unitPrice, setUnitPrice] = useState(order ? order.unit_price ?? '' : '');
   const [deliveryFee, setDeliveryFee] = useState(order ? order.delivery_fee ?? 0 : 0);
   const [paymentStatus, setPaymentStatus] = useState(order ? order.payment_status || 'Unpaid' : 'Unpaid');
+  const [paymentMethod, setPaymentMethod] = useState(order ? order.payment_method || 'COD' : 'COD');
+  const [leadSource, setLeadSource] = useState(order ? order.lead_source || '' : '');
   const [rescheduleDate, setRescheduleDate] = useState(order ? order.reschedule_date || '' : '');
   const [priority, setPriority] = useState(order ? order.priority || 'Normal' : 'Normal');
   const [preferredTime, setPreferredTime] = useState(order ? order.preferred_time || '' : '');
@@ -641,6 +643,8 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
           unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
           delivery_fee: parseFloat(deliveryFee) || 0,
           payment_status: paymentStatus,
+          payment_method: paymentMethod,
+          lead_source: leadSource || null,
           reschedule_date: rescheduleDate || null,
           priority, preferred_time: preferredTime.trim(),
           package_id: null, gift_quantity: 0,
@@ -669,6 +673,8 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
         delivery_fee: parseFloat(deliveryFee) || 0,
         payment_status: paymentStatus,
+        payment_method: paymentMethod,
+        lead_source: leadSource || null,
         reschedule_date: rescheduleDate || null,
         priority, preferred_time: preferredTime.trim(),
         package_id: giftProduct ? (packageId || null) : null,
@@ -747,6 +753,29 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         <div className="row2">
           <div><label>Phone</label><input value={phone} onChange={e => setPhone(e.target.value)} placeholder="080..." /></div>
           <div><label>Alternate phone (optional)</label><input value={phone2} onChange={e => setPhone2(e.target.value)} placeholder="080..." /></div>
+        </div>
+        <div className="row2">
+          <div><label>Payment method</label>
+            <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+              <option value="COD">COD</option>
+              <option value="Prepaid">Prepaid</option>
+            </select>
+          </div>
+          <div><label>Lead source</label>
+            <select value={leadSource} onChange={e => setLeadSource(e.target.value)}>
+              <option value="">— Not set —</option>
+              <option value="WhatsApp">WhatsApp</option>
+              <option value="Instagram">Instagram</option>
+              <option value="Facebook">Facebook</option>
+              <option value="TikTok">TikTok</option>
+              <option value="Website">Website</option>
+              <option value="Phone Call">Phone Call</option>
+              <option value="Referral">Referral</option>
+              <option value="Influencer">Influencer</option>
+              <option value="Walk-in">Walk-in</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
         </div>
         <div className="row2">
           <div><label>Quantity</label><input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)} disabled={isLocked} /></div>
@@ -946,14 +975,14 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
           return true;
         })
       : filtered;
-    const headers = ['Serial #', 'Order ID', 'Item', 'Quantity', 'Unit Price', 'Amount', 'Package Changed?', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Delivery Fee', 'Payment Status', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Confirmed At', 'Last Status Update', 'Delivered At'];
+    const headers = ['Serial #', 'Order ID', 'Item', 'Quantity', 'Unit Price', 'Amount', 'Package Changed?', 'Customer', 'Phone', 'Alt Phone', 'State', 'Address', 'Delivery Fee', 'Payment Status', 'Payment Method', 'Lead Source', 'Status', 'Priority', 'Preferred Time', 'Assigned Staff', 'Assigned Dispatch', 'Submitted By', 'Created At', 'Confirmed At', 'Last Status Update', 'Delivered At'];
     const rows = source.map(o => {
       const current = getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]);
       const itemName = current.setId ? `Set: ${(productSets.find(s => s.id === current.setId) || {}).name || '—'}` : prodName(current.productId);
       return [
         o.serial_number || '', o.id, itemName, current.quantity, current.unitPrice, current.amount, current.changed ? 'Yes' : 'No',
         o.customer, o.phone, o.phone2 || '', o.state || '', (o.address || '').replace(/\n/g, ' '),
-        o.delivery_fee ?? 0, o.payment_status || '', o.status,
+        o.delivery_fee ?? 0, o.payment_status || '', o.payment_method || '', o.lead_source || '', o.status,
         o.priority || '', o.preferred_time || '', personName(o.staff_id), personName(o.dispatch_id),
         o.created_by ? personName(o.created_by) : '', o.created_at, o.confirmed_at || '', o.status_updated_at || '', o.delivered_at || '',
       ];
@@ -1519,7 +1548,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       )}
       {assigning && <AssignModal order={assigning} profiles={profiles} onClose={() => setAssigning(null)} onSave={(patch) => { updateOrder(assigning.id, patch, 'assigned'); setAssigning(null); }} />}
       {historyOrder && <OrderHistoryModal order={historyOrder} products={products} productSets={productSets} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
-      {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} onClose={() => setCustomerView(null)} />}
+      {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} packages={packages} productSets={productSets} upsellsByOrder={upsellsByOrder} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} session={session} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
       {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
       {forwarding && (

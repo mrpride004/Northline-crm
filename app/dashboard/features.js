@@ -4,6 +4,8 @@ import { supabase } from '../../lib/supabaseClient';
 
 const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Unverified', 'Rescheduled', 'Failed Delivery', 'Cancelled'];
 
+const LEAD_SOURCES = ['WhatsApp', 'Instagram', 'Facebook', 'TikTok', 'Website', 'Phone Call', 'Referral', 'Influencer', 'Walk-in', 'Other'];
+
 // Statuses a staff member can ever be granted (via role default or personal
 // override) — 'Failed Delivery' is deliberately left out here, not just
 // unchecked by default: only admin/dispatch can ever set it, so it doesn't
@@ -1003,6 +1005,36 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
           {STATUSES.map(s => (
             <tr key={s}><td><span className={'pill ' + pillClass(s)}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
           ))}
+        </tbody>
+      </table>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By lead source</h3>
+      <table style={{ marginBottom: '24px' }}>
+        <thead><tr><th>Source</th><th>Orders</th><th>Delivered</th><th>Revenue</th></tr></thead>
+        <tbody>
+          {LEAD_SOURCES.map(src => {
+            const srcOrders = scoped.filter(o => o.lead_source === src);
+            if (srcOrders.length === 0) return null;
+            const srcDelivered = srcOrders.filter(o => o.status === 'Delivered');
+            const srcRevenue = srcDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+            return (
+              <tr key={src}>
+                <td>{src}</td>
+                <td>{srcOrders.length}</td>
+                <td>{srcDelivered.length}</td>
+                <td>₦{srcRevenue.toLocaleString()}</td>
+              </tr>
+            );
+          })}
+          {(() => {
+            const unset = scoped.filter(o => !o.lead_source);
+            if (unset.length === 0) return null;
+            const unsetDelivered = unset.filter(o => o.status === 'Delivered');
+            const unsetRevenue = unsetDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+            return (
+              <tr><td style={{ color: '#8A93A0' }}>Not set</td><td>{unset.length}</td><td>{unsetDelivered.length}</td><td>₦{unsetRevenue.toLocaleString()}</td></tr>
+            );
+          })()}
         </tbody>
       </table>
 
@@ -2091,21 +2123,115 @@ export function OrderHistoryModal({ order, products, productSets, profile, onClo
 }
 
 // ---------- Customer history ----------
-export function CustomerHistoryModal({ phone, customer, orders, products, onClose }) {
-  const history = orders.filter(o => o.phone && phone && o.phone.trim() === phone.trim());
+// Automatic customer classification — layered badges, not mutually exclusive
+// (a customer can be both "Returning" and "VIP" and "COD Customer" at once).
+// Thresholds are business heuristics, not exact science — tune here if the
+// mix of badges customers get doesn't feel right in practice.
+function classifyCustomer(stats) {
+  const { totalOrders, deliveredCount, cancelledCount, returnedCount, totalSpent, lastOrderDate, codCount, prepaidCount } = stats;
+  const badges = [];
+
+  // Lifecycle stage — always exactly one of these two.
+  if (totalOrders <= 1) {
+    badges.push({ label: 'New Customer', color: '#4F46E5' });
+  } else {
+    badges.push({ label: 'Returning Customer', color: '#2E7D32' });
+  }
+  if (totalOrders === 1 && deliveredCount === 1) {
+    badges.push({ label: 'First-Time Buyer', color: '#0277BD' });
+  }
+
+  // Value tiers.
+  if (deliveredCount >= 5) badges.push({ label: 'VIP Customer', color: '#B8860B' });
+  if (totalSpent >= 200000) badges.push({ label: 'High Value Customer', color: '#8E24AA' });
+
+  // Recency / risk.
+  const daysSinceLastOrder = lastOrderDate ? Math.floor((Date.now() - new Date(lastOrderDate).getTime()) / 86400000) : null;
+  if (daysSinceLastOrder != null && totalOrders >= 2) {
+    if (daysSinceLastOrder >= 120) {
+      badges.push({ label: 'Inactive Customer', color: '#78716C' });
+    } else if (daysSinceLastOrder >= 60) {
+      badges.push({ label: 'At-Risk Customer', color: '#D2691E' });
+    }
+  }
+
+  // Payment behavior.
+  if (totalOrders > 0) {
+    if (codCount / totalOrders >= 0.7) badges.push({ label: 'COD Customer', color: '#0E7490' });
+    if (prepaidCount / totalOrders >= 0.7) badges.push({ label: 'Prepaid Customer', color: '#15803D' });
+  }
+
+  // Cancellation / return patterns.
+  if (totalOrders >= 2 && cancelledCount / totalOrders >= 0.3) {
+    badges.push({ label: 'Frequent Canceller', color: '#B0483F' });
+  }
+  if (totalOrders >= 2 && returnedCount / totalOrders >= 0.3) {
+    badges.push({ label: 'Frequent Returner', color: '#B0483F' });
+  }
+
+  return badges;
+}
+
+export function CustomerHistoryModal({ phone, customer, orders, products, packages, productSets, upsellsByOrder, onClose }) {
+  const history = orders
+    .filter(o => o.phone && phone && o.phone.trim() === phone.trim())
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+  const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
+  const setName = id => (productSets || []).find(s => s.id === id)?.name || null;
+  const itemName = o => (o.set_id ? (setName(o.set_id) || '—') : o.package_id ? (pkgName(o.package_id) || prodName(o.product_id)) : prodName(o.product_id));
+
+  const totalOrders = history.length;
+  const deliveredOrders = history.filter(o => o.status === 'Delivered');
+  const cancelledOrders = history.filter(o => o.status === 'Cancelled');
+  const returnedOrders = []; // Returns & Refunds module not built yet — always 0 for now.
+  const codOrders = history.filter(o => (o.payment_method || 'COD') === 'COD');
+  const prepaidOrders = history.filter(o => o.payment_method === 'Prepaid');
+  const totalSpent = deliveredOrders.reduce((sum, o) => sum + getCurrentPackage(o, upsellsByOrder && upsellsByOrder[o.id]).amount, 0);
+  const firstOrderDate = totalOrders > 0 ? history[history.length - 1].created_at : null;
+  const lastOrderDate = totalOrders > 0 ? history[0].created_at : null;
+  const daysSinceLastOrder = lastOrderDate ? Math.floor((Date.now() - new Date(lastOrderDate).getTime()) / 86400000) : null;
+
+  const itemCounts = {};
+  history.forEach(o => { const name = itemName(o); itemCounts[name] = (itemCounts[name] || 0) + 1; });
+  const preferredEntry = Object.entries(itemCounts).sort((a, b) => b[1] - a[1])[0];
+  const productsPurchased = [...new Set(history.map(itemName))];
+
+  const badges = classifyCustomer({
+    totalOrders, deliveredCount: deliveredOrders.length, cancelledCount: cancelledOrders.length,
+    returnedCount: returnedOrders.length, totalSpent, lastOrderDate,
+    codCount: codOrders.length, prepaidCount: prepaidOrders.length,
+  });
+
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>{customer} · order history</h3>
-        <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+        <h3>{customer} · customer history</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '4px 0 14px' }}>
+          {badges.map(b => (
+            <span key={b.label} style={{ fontSize: '11px', fontWeight: 600, padding: '3px 9px', borderRadius: '999px', color: '#fff', background: b.color }}>{b.label}</span>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '14px' }}>
+          <div className="stat" style={{ padding: '10px' }}><div className="stat-num" style={{ fontSize: '18px' }}>{totalOrders}</div><div className="stat-label">Total orders</div></div>
+          <div className="stat" style={{ padding: '10px' }}><div className="stat-num" style={{ fontSize: '18px' }}>₦{totalSpent.toLocaleString()}</div><div className="stat-label">Total spent</div></div>
+          <div className="stat" style={{ padding: '10px' }}><div className="stat-num" style={{ fontSize: '18px' }}>{deliveredOrders.length}</div><div className="stat-label">Successful deliveries</div></div>
+          <div className="stat" style={{ padding: '10px' }}><div className="stat-num" style={{ fontSize: '18px' }}>{cancelledOrders.length}</div><div className="stat-label">Cancelled</div></div>
+        </div>
+        <div style={{ fontSize: '12px', color: '#5B6472', marginBottom: '14px', lineHeight: 1.7 }}>
+          <div>First order: {firstOrderDate ? new Date(firstOrderDate).toLocaleDateString() : '—'}</div>
+          <div>Last order: {lastOrderDate ? new Date(lastOrderDate).toLocaleDateString() : '—'}{daysSinceLastOrder != null ? ` (${daysSinceLastOrder}d ago)` : ''}</div>
+          <div>Preferred item: {preferredEntry ? `${preferredEntry[0]} (×${preferredEntry[1]})` : '—'}</div>
+          <div>Products purchased: {productsPurchased.length > 0 ? productsPurchased.join(', ') : '—'}</div>
+        </div>
+        <div style={{ maxHeight: '260px', overflowY: 'auto', borderTop: '1px solid #DEDAD0', paddingTop: '10px' }}>
           {history.map(o => (
             <div key={o.id} style={{ borderBottom: '1px solid #DEDAD0', padding: '10px 0', fontSize: '13px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{prodName(o.product_id)} × {o.quantity || 1}</span>
+                <span>{itemName(o)} × {o.quantity || 1}</span>
                 <span className={'pill ' + pillClass(o.status)}>{o.status}</span>
               </div>
-              <div style={{ color: '#8A93A0', fontSize: '11.5px' }}>{new Date(o.created_at).toLocaleDateString()} · {o.payment_status}</div>
+              <div style={{ color: '#8A93A0', fontSize: '11.5px' }}>{new Date(o.created_at).toLocaleDateString()} · {o.payment_status} · {o.payment_method || 'COD'}</div>
             </div>
           ))}
           {history.length === 0 && <p style={{ fontSize: '12px', color: '#8A93A0' }}>No other orders from this number yet.</p>}
