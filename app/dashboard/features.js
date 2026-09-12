@@ -46,6 +46,15 @@ export async function logEvent({ order_id, actor_id, actor_name, event_type, fro
   await supabase.from('order_events').insert({ order_id, actor_id, actor_name, event_type, from_status, to_status, note });
 }
 
+// Best-effort account/security audit trail — a failed log should never block
+// the sensitive action itself, so every caller fires this without awaiting
+// (or awaits but ignores the outcome) and never surfaces its errors.
+export async function logSecurityEvent({ actor_id, actor_name, action, target_type, target_id, target_name, details }) {
+  try {
+    await supabase.from('security_log').insert({ actor_id, actor_name, action, target_type, target_id, target_name, details });
+  } catch (e) { /* best-effort — never block the action that triggered this */ }
+}
+
 // ---------- Push notifications ----------
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -1294,7 +1303,7 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
   );
 }
 
-export function PersonDetailModal({ person, orders, lastSeenText, session, onChanged, onClose }) {
+export function PersonDetailModal({ person, orders, lastSeenText, session, profile, onChanged, onClose }) {
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -1357,6 +1366,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
     setBusy(true);
     await supabase.from('profiles').update({ active: !person.active }).eq('id', person.id);
     setBusy(false);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: person.active ? 'Deactivated account' : 'Reactivated account', target_type: 'profile', target_id: person.id, target_name: person.full_name });
     if (onChanged) onChanged();
   }
 
@@ -1371,6 +1381,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
     const body = await res.json();
     setBusy(false);
     setPasswordMsg(res.ok ? `Password updated — tell ${person.full_name.split(' ')[0]} their new password: ${newPassword}` : (body.error || 'Something went wrong.'));
+    if (res.ok) logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Reset password', target_type: 'profile', target_id: person.id, target_name: person.full_name });
   }
 
   async function remove() {
@@ -1382,6 +1393,7 @@ export function PersonDetailModal({ person, orders, lastSeenText, session, onCha
       body: JSON.stringify({ userId: person.id }),
     });
     setBusy(false);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Removed login', target_type: 'profile', target_id: person.id, target_name: person.full_name, details: person.role });
     if (onChanged) onChanged();
     onClose();
   }
@@ -4620,6 +4632,126 @@ function ReturnDetailModal({ ret, order, products, productSets, profile, upsells
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------- Security: sign-in history & sensitive-action audit log ----------
+// Lightweight, dependency-free UA parsing — good enough to tell "Chrome on a
+// Windows laptop" from "Safari on an iPhone" without pulling in a library.
+function parseUserAgent(ua) {
+  if (!ua) return '—';
+  let browser = 'Unknown browser';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/OPR\//.test(ua)) browser = 'Opera';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/CriOS\//.test(ua)) browser = 'Chrome (iOS)';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+
+  let os = 'Unknown device';
+  if (/iPhone/.test(ua)) os = 'iPhone';
+  else if (/iPad/.test(ua)) os = 'iPad';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/Mac OS X/.test(ua)) os = 'Mac';
+  else if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Linux/.test(ua)) os = 'Linux';
+
+  return `${browser} on ${os}`;
+}
+
+export function SecurityPage({ profiles, profile, session }) {
+  const [tab, setTab] = useState('logins');
+  const [logins, setLogins] = useState([]);
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [userFilter, setUserFilter] = useState('all');
+
+  async function load() {
+    const [{ data: lh }, { data: sl }] = await Promise.all([
+      supabase.from('login_history').select('*').order('created_at', { ascending: false }).limit(500),
+      supabase.from('security_log').select('*').order('created_at', { ascending: false }).limit(500),
+    ]);
+    setLogins(lh || []);
+    setActivity(sl || []);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const channel = supabase.channel('security-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'login_history' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'security_log' }, load)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  const isAdmin = profile?.role === 'admin';
+  // Non-admins only ever see their own rows anyway (RLS), but the filter UI
+  // is admin-only since it's pointless otherwise.
+  const filteredLogins = userFilter === 'all' ? logins : logins.filter(l => l.user_id === userFilter);
+  const peopleWithLogins = (profiles || []).filter(p => logins.some(l => l.user_id === p.id));
+
+  if (loading) return <div className="loading">Loading security…</div>;
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Security</h1><p className="page-sub">Sign-in history and a record of sensitive account actions. Both logs are permanent — nobody, including admin, can edit or delete an entry.</p></div>
+      </div>
+
+      <div className="product-tabs" style={{ marginBottom: '18px' }}>
+        <span className={'ptab' + (tab === 'logins' ? ' active' : '')} onClick={() => setTab('logins')}>Login history</span>
+        {isAdmin && <span className={'ptab' + (tab === 'activity' ? ' active' : '')} onClick={() => setTab('activity')}>Activity log</span>}
+      </div>
+
+      {tab === 'logins' && (
+        <div>
+          {isAdmin && peopleWithLogins.length > 0 && (
+            <select value={userFilter} onChange={e => setUserFilter(e.target.value)} style={{ marginBottom: '14px', maxWidth: '260px' }}>
+              <option value="all">Everyone</option>
+              {peopleWithLogins.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+            </select>
+          )}
+          {filteredLogins.length === 0 ? (
+            <div className="empty">No sign-ins recorded yet.</div>
+          ) : (
+            <table>
+              <thead><tr>{isAdmin && <th>Person</th>}<th>When</th><th>Device</th><th>IP address</th></tr></thead>
+              <tbody>
+                {filteredLogins.map(l => (
+                  <tr key={l.id}>
+                    {isAdmin && <td>{l.actor_name || '—'}</td>}
+                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(l.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                    <td>{parseUserAgent(l.user_agent)}</td>
+                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{l.ip_address || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {tab === 'activity' && isAdmin && (
+        activity.length === 0 ? (
+          <div className="empty">No sensitive actions logged yet.</div>
+        ) : (
+          <table>
+            <thead><tr><th>Who</th><th>Action</th><th>On</th><th>Details</th><th>When</th></tr></thead>
+            <tbody>
+              {activity.map(a => (
+                <tr key={a.id}>
+                  <td>{a.actor_name || '—'}</td>
+                  <td>{a.action}</td>
+                  <td>{a.target_name || '—'}</td>
+                  <td style={{ fontSize: '12px', color: '#8A93A0' }}>{a.details || '—'}</td>
+                  <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(a.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
     </div>
   );
 }

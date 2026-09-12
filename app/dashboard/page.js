@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, STAFF_ASSIGNABLE_STATUSES, pillClass, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub, FailedDeliveriesPage, ProductCategoriesPage, ProductVariantsModal } from './features';
+import { STATUSES, STAFF_ASSIGNABLE_STATUSES, pillClass, logEvent, logSecurityEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub, FailedDeliveriesPage, ProductCategoriesPage, ProductVariantsModal, SecurityPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -455,6 +455,7 @@ function DashboardInner() {
     { key: 'reports', label: 'Reports' },
     { key: 'commission', label: 'Commission' },
     { key: 'finance', label: 'Finance' },
+    { key: 'security', label: 'Security' },
     { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
     { key: 'settings', label: 'Settings' },
@@ -526,8 +527,8 @@ function DashboardInner() {
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} productCategories={productCategories} productVariants={productVariants} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} productSets={productSets} orders={orders} profiles={profiles} agentStock={agentStock} suppliers={suppliers} session={session} profile={profile} refresh={refreshAll} />}
-        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
-        {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
+        {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} profile={profile} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
+        {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} profile={profile} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
         {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} latestRemarks={latestRemarks} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} products={products} productSets={productSets} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
@@ -536,6 +537,7 @@ function DashboardInner() {
         {page === 'faileddeliveries' && (profile.role === 'staff' || profile.role === 'dispatch') && <FailedDeliveriesPage orders={reportOrders} products={products} productSets={productSets} packages={packages} profiles={profiles} profile={profile} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={reportOrders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
         {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} profile={profile} upsellsByOrder={upsellsByOrder} remittances={remittances} refresh={refreshAll} />}
+        {isAdmin && page === 'security' && <SecurityPage profiles={profiles} profile={profile} session={session} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
@@ -1670,7 +1672,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       {historyOrder && <OrderHistoryModal order={historyOrder} products={products} productSets={productSets} profile={profile} onClose={() => setHistoryOrder(null)} onLogged={refresh} />}
       {customerView && <CustomerHistoryModal phone={customerView.phone} customer={customerView.customer} orders={orders} products={products} packages={packages} productSets={productSets} upsellsByOrder={upsellsByOrder} onClose={() => setCustomerView(null)} />}
       {confirming && <ConfirmOrderModal order={confirming} profile={profile} profiles={profiles} session={session} onClose={() => setConfirming(null)} onConfirmed={() => { setConfirming(null); refresh(); }} />}
-      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} profile={profile} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
       {forwarding && (
         <ForwardModal
           order={forwarding} products={products} companies={dispatchCompanies || []}
@@ -2230,7 +2232,7 @@ function ProductsPage({ products, orders, packages, profiles, productCategories,
   );
 }
 
-function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOpenPermissions }) {
+function TeamPage({ profiles, orders, products, session, profile, lastSeen, refresh, onOpenPermissions }) {
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -2289,12 +2291,14 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOp
     const body = await res.json();
     if (!res.ok) { setStatus(body.error || 'Something went wrong.'); return; }
     setStatus(`Login created for ${name.trim()}.`);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Created login', target_type: 'profile', target_id: null, target_name: name.trim(), details: role });
     setName(''); setUsername(''); setEmail(''); setPassword(''); setState(''); setAllowedProducts([]); setAllowedSections([]);
     refresh();
   }
 
   async function toggleActive(s) {
     await supabase.from('profiles').update({ active: !s.active }).eq('id', s.id);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: s.active ? 'Deactivated account' : 'Reactivated account', target_type: 'profile', target_id: s.id, target_name: s.full_name });
     refresh();
   }
 
@@ -2303,11 +2307,13 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOp
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [passwordSetMsg, setPasswordSetMsg] = useState('');
   async function removeUser(id) {
+    const target = profiles.find(p => p.id === id);
     await fetch('/api/delete-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify({ userId: id }),
     });
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Removed login', target_type: 'profile', target_id: id, target_name: target?.full_name, details: target?.role });
     setConfirmDeleteId(null);
     refresh();
   }
@@ -2321,7 +2327,10 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOp
     });
     const body = await res.json();
     setPasswordSetMsg(res.ok ? `✓ New password for ${person.full_name.split(' ')[0]}: ${newPasswordValue}` : (body.error || 'Something went wrong.'));
-    if (res.ok) setNewPasswordValue('');
+    if (res.ok) {
+      setNewPasswordValue('');
+      logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Reset password', target_type: 'profile', target_id: person.id, target_name: person.full_name });
+    }
   }
 
   return (
@@ -2435,7 +2444,7 @@ function TeamPage({ profiles, orders, products, session, lastSeen, refresh, onOp
         {status && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{status}</p>}
       </div>
 
-      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
+      {viewingPerson && <PersonDetailModal person={viewingPerson} orders={orders} lastSeenText={timeAgo(lastSeen && lastSeen[viewingPerson.id])} session={session} profile={profile} onChanged={refresh} onClose={() => setViewingPerson(null)} />}
     </div>
   );
 }
@@ -2470,7 +2479,7 @@ function rolePermFields(role) {
   };
 }
 
-function PermissionsPage({ profiles, products, roleDefaults, focusPersonId, onFocusConsumed, refresh }) {
+function PermissionsPage({ profiles, products, roleDefaults, profile, focusPersonId, onFocusConsumed, refresh }) {
   const [activeRole, setActiveRole] = useState('staff');
   const [editingPerson, setEditingPerson] = useState(null);
   const [sources, setSources] = useState([]);
@@ -2536,11 +2545,14 @@ function PermissionsPage({ profiles, products, roleDefaults, focusPersonId, onFo
 
   async function saveRoleDefaults(patch) {
     await supabase.from('role_permission_defaults').update(patch).eq('role', activeRole);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Updated role defaults', target_type: 'role', target_name: activeRole, details: Object.keys(patch).join(', ') });
     refresh();
   }
 
   async function savePerson(id, patch) {
     await supabase.from('profiles').update(patch).eq('id', id);
+    const target = profiles.find(p => p.id === id);
+    logSecurityEvent({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Updated permissions', target_type: 'profile', target_id: id, target_name: target?.full_name, details: Object.keys(patch).join(', ') });
     setEditingPerson(null);
     refresh();
   }
