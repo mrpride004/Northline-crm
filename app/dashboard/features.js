@@ -818,6 +818,9 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
   const [detailPerson, setDetailPerson] = useState(null);
   const [movements, setMovements] = useState([]);
   const [upsellsByOrder, setUpsellsByOrder] = useState({});
+  const [section, setSection] = useState('overview');
+  const [adExpenses, setAdExpenses] = useState([]);
+  const [landingSources, setLandingSources] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -835,6 +838,20 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
         map[u.original_order_id].push(u);
       });
       setUpsellsByOrder(map);
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('expenses').select('*').eq('category', 'ad_spend');
+      setAdExpenses(data || []);
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('landing_page_sources').select('*');
+      setLandingSources(data || []);
     })();
   }, []);
 
@@ -865,6 +882,20 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
     if (range === 'custom') {
       if (fromDate && created < new Date(fromDate)) return false;
       if (toDate && created > new Date(toDate + 'T23:59:59')) return false;
+      return true;
+    }
+    return true;
+  }
+
+  function expenseInRange(e) {
+    const d = new Date(e.expense_date + 'T00:00:00');
+    const now = new Date();
+    if (range === 'today') return d.toDateString() === now.toDateString();
+    if (range === '7d') return now - d <= 7 * 24 * 60 * 60 * 1000;
+    if (range === '30d') return now - d <= 30 * 24 * 60 * 60 * 1000;
+    if (range === 'custom') {
+      if (fromDate && d < new Date(fromDate)) return false;
+      if (toDate && d > new Date(toDate + 'T23:59:59')) return false;
       return true;
     }
     return true;
@@ -918,6 +949,61 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
   });
   const stateRows = Object.entries(byState).sort((a, b) => b[1].sent - a[1].sent);
 
+  const scopedAdSpend = adExpenses.filter(expenseInRange);
+  const spendByChannel = {};
+  scopedAdSpend.forEach(e => {
+    const key = (e.channel || 'Unspecified').trim();
+    spendByChannel[key] = (spendByChannel[key] || 0) + Number(e.amount || 0);
+  });
+  const totalAdSpend = scopedAdSpend.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+
+  function findSpendFor(sourceName) {
+    const match = Object.keys(spendByChannel).find(k => k.toLowerCase() === sourceName.toLowerCase());
+    return match ? spendByChannel[match] : 0;
+  }
+
+  const sourceStats = LEAD_SOURCES.map(src => {
+    const srcOrders = scoped.filter(o => o.lead_source === src);
+    const srcDelivered = srcOrders.filter(o => o.status === 'Delivered');
+    const revenue = srcDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+    const spend = findSpendFor(src);
+    const conversion = srcOrders.length ? (srcDelivered.length / srcOrders.length) * 100 : 0;
+    const cac = spend > 0 && srcDelivered.length > 0 ? spend / srcDelivered.length : null;
+    const roas = spend > 0 ? revenue / spend : null;
+    return { source: src, orders: srcOrders.length, delivered: srcDelivered.length, revenue, spend, conversion, cac, roas };
+  }).filter(s => s.orders > 0 || s.spend > 0);
+
+  const matchedChannelNames = new Set(LEAD_SOURCES.map(s => s.toLowerCase()));
+  const unmatchedSpend = Object.entries(spendByChannel).filter(([k]) => !matchedChannelNames.has(k.toLowerCase()));
+
+  const totalMarketingRevenue = sourceStats.reduce((sum, s) => sum + s.revenue, 0);
+  const blendedRoas = totalAdSpend > 0 ? totalMarketingRevenue / totalAdSpend : null;
+
+  const campaignStats = landingSources.map(ls => {
+    const lsOrders = scoped.filter(o => o.landing_page_source_id === ls.id);
+    const lsDelivered = lsOrders.filter(o => o.status === 'Delivered');
+    const revenue = lsDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+    const conversion = lsOrders.length ? (lsDelivered.length / lsOrders.length) * 100 : 0;
+    const linkedProduct = (products || []).find(p => p.id === ls.product_id);
+    return { id: ls.id, name: ls.name, product: linkedProduct ? linkedProduct.name : '—', orders: lsOrders.length, delivered: lsDelivered.length, revenue, conversion };
+  }).filter(c => c.orders > 0).sort((a, b) => b.revenue - a.revenue);
+
+  const productRevenue = (products || []).map(p => {
+    const prodDelivered = scoped.filter(o => o.product_id === p.id && o.status === 'Delivered');
+    const revenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+    return { name: p.name, revenue, delivered: prodDelivered.length };
+  }).filter(p => p.revenue > 0).sort((a, b) => b.revenue - a.revenue);
+  const bestProduct = productRevenue[0] || null;
+
+  const staffRevenue = profiles.filter(p => p.role === 'staff').map(s => {
+    const handled = scoped.filter(o => o.staff_id === s.id && o.status === 'Delivered');
+    const revenue = handled.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+    return { name: s.full_name, revenue, delivered: handled.length };
+  }).filter(s => s.revenue > 0).sort((a, b) => b.revenue - a.revenue);
+  const bestStaff = staffRevenue[0] || null;
+
+  const bestCampaign = campaignStats[0] || null;
+
   function PerformanceTable({ title, rows, roleLabel }) {
     return (
       <>
@@ -949,6 +1035,12 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
         <div><h1 className="page-title">Reports</h1><p className="page-sub">Order volume, revenue, and team performance.</p></div>
       </div>
       <div className="product-tabs">
+        <span className={'ptab' + (section === 'overview' ? ' active' : '')} onClick={() => setSection('overview')}>Overview</span>
+        <span className={'ptab' + (section === 'marketing' ? ' active' : '')} onClick={() => setSection('marketing')}>Marketing</span>
+        <span className={'ptab' + (section === 'team' ? ' active' : '')} onClick={() => setSection('team')}>Team</span>
+        <span className={'ptab' + (section === 'state' ? ' active' : '')} onClick={() => setSection('state')}>By state</span>
+      </div>
+      <div className="product-tabs" style={{ marginTop: '-6px' }}>
         <span className={'ptab' + (range === 'today' ? ' active' : '')} onClick={() => setRange('today')}>Today</span>
         <span className={'ptab' + (range === '7d' ? ' active' : '')} onClick={() => setRange('7d')}>Last 7 days</span>
         <span className={'ptab' + (range === '30d' ? ' active' : '')} onClick={() => setRange('30d')}>Last 30 days</span>
@@ -961,121 +1053,189 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
           <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
         </div>
       )}
-      <div className="stats">
-        <div className="stat"><div className="stat-num">{scoped.length}</div><div className="stat-label">Orders</div></div>
-        <div className="stat"><div className="stat-num">{delivered.length}</div><div className="stat-label">Delivered</div></div>
-        <div className="stat"><div className="stat-num">{cancelled.length}</div><div className="stat-label">Cancelled</div></div>
-        <div className="stat"><div className="stat-num">₦{revenue.toLocaleString()}</div><div className="stat-label">Revenue (after delivery fees)</div></div>
-      </div>
 
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Delivery charges</h3>
-      <div className="stats" style={{ marginBottom: '8px' }}>
-        <div className="stat"><div className="stat-num">₦{totalDeliveryCharges.toLocaleString()}</div><div className="stat-label">Total delivery charges (delivered orders)</div></div>
-      </div>
-      <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '18px' }}>Delivery charges are entered by dispatch when they mark an order delivered, and are already subtracted from the revenue figure above.</p>
-
-      {products && products.length > 0 && (
+      {section === 'overview' && (
         <>
-          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By product</h3>
+          <div className="stats">
+            <div className="stat"><div className="stat-num">{scoped.length}</div><div className="stat-label">Orders</div></div>
+            <div className="stat"><div className="stat-num">{delivered.length}</div><div className="stat-label">Delivered</div></div>
+            <div className="stat"><div className="stat-num">{cancelled.length}</div><div className="stat-label">Cancelled</div></div>
+            <div className="stat"><div className="stat-num">₦{revenue.toLocaleString()}</div><div className="stat-label">Revenue (after delivery fees)</div></div>
+          </div>
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Delivery charges</h3>
+          <div className="stats" style={{ marginBottom: '8px' }}>
+            <div className="stat"><div className="stat-num">₦{totalDeliveryCharges.toLocaleString()}</div><div className="stat-label">Total delivery charges (delivered orders)</div></div>
+          </div>
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '18px' }}>Delivery charges are entered by dispatch when they mark an order delivered, and are already subtracted from the revenue figure above.</p>
+
+          {products && products.length > 0 && (
+            <>
+              <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By product</h3>
+              <table style={{ marginBottom: '24px' }}>
+                <thead><tr><th>Product</th><th>Orders</th><th>Delivered</th><th>Revenue</th></tr></thead>
+                <tbody>
+                  {products.map(p => {
+                    const prodOrders = scoped.filter(o => o.product_id === p.id);
+                    const prodDelivered = prodOrders.filter(o => o.status === 'Delivered');
+                    const prodRevenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+                    return (
+                      <tr key={p.id}>
+                        <td>{p.name}</td>
+                        <td>{prodOrders.length}</td>
+                        <td>{prodDelivered.length}</td>
+                        <td>₦{prodRevenue.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By status</h3>
           <table style={{ marginBottom: '24px' }}>
-            <thead><tr><th>Product</th><th>Orders</th><th>Delivered</th><th>Revenue</th></tr></thead>
+            <thead><tr><th>Status</th><th>Orders in this range</th></tr></thead>
             <tbody>
-              {products.map(p => {
-                const prodOrders = scoped.filter(o => o.product_id === p.id);
-                const prodDelivered = prodOrders.filter(o => o.status === 'Delivered');
-                const prodRevenue = prodDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
-                return (
-                  <tr key={p.id}>
-                    <td>{p.name}</td>
-                    <td>{prodOrders.length}</td>
-                    <td>{prodDelivered.length}</td>
-                    <td>₦{prodRevenue.toLocaleString()}</td>
+              {STATUSES.map(s => (
+                <tr key={s}><td><span className={'pill ' + pillClass(s)}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Failed deliveries</h3>
+          <div className="stats" style={{ marginBottom: '10px' }}>
+            <div className="stat"><div className="stat-num">{failedDeliveries.length}</div><div className="stat-label">Failed delivery attempts in this range</div></div>
+          </div>
+          {failedDeliveries.length === 0 ? (
+            <div className="empty" style={{ marginBottom: '24px' }}>No failed deliveries in this range.</div>
+          ) : (
+            <table style={{ marginBottom: '24px' }}>
+              <thead><tr><th>Order</th><th>Customer</th><th>Staff</th><th>Dispatch</th><th>Fee</th><th>Reason</th><th>When</th></tr></thead>
+              <tbody>
+                {failedDeliveries.map(o => (
+                  <tr key={o.id}>
+                    <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
+                    <td>{o.customer}</td>
+                    <td>{o.staff_id ? (profiles.find(p => p.id === o.staff_id) || {}).full_name || '—' : '—'}</td>
+                    <td>{o.dispatch_id ? (profiles.find(p => p.id === o.dispatch_id) || {}).full_name || '—' : '—'}</td>
+                    <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
+                    <td style={{ fontSize: '12.5px', maxWidth: '240px' }}>{(latestRemarks && latestRemarks[o.id] && latestRemarks[o.id].note) || <span style={{ color: '#8A93A0' }}>No remark recorded</span>}</td>
+                    <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                   </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      {section === 'marketing' && (
+        <>
+          <div className="stats" style={{ marginBottom: '18px' }}>
+            <div className="stat"><div className="stat-num">₦{totalAdSpend.toLocaleString()}</div><div className="stat-label">Ad spend logged (this range)</div></div>
+            <div className="stat"><div className="stat-num">₦{totalMarketingRevenue.toLocaleString()}</div><div className="stat-label">Revenue with a lead source set</div></div>
+            <div className="stat"><div className="stat-num">{blendedRoas !== null ? blendedRoas.toFixed(2) + 'x' : '—'}</div><div className="stat-label">Blended ROAS</div></div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '22px' }}>
+            <div style={{ flex: '1 1 200px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px' }}>
+              <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best product</div>
+              <div style={{ fontSize: '15px', fontWeight: 600 }}>{bestProduct ? bestProduct.name : '—'}</div>
+              <div style={{ fontSize: '12px', color: '#8A93A0' }}>{bestProduct ? `₦${bestProduct.revenue.toLocaleString()} · ${bestProduct.delivered} delivered` : 'No delivered orders in this range yet.'}</div>
+            </div>
+            <div style={{ flex: '1 1 200px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px' }}>
+              <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best staff</div>
+              <div style={{ fontSize: '15px', fontWeight: 600 }}>{bestStaff ? bestStaff.name : '—'}</div>
+              <div style={{ fontSize: '12px', color: '#8A93A0' }}>{bestStaff ? `₦${bestStaff.revenue.toLocaleString()} · ${bestStaff.delivered} delivered` : 'No delivered orders in this range yet.'}</div>
+            </div>
+            <div style={{ flex: '1 1 200px', background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '14px' }}>
+              <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best campaign</div>
+              <div style={{ fontSize: '15px', fontWeight: 600 }}>{bestCampaign ? bestCampaign.name : '—'}</div>
+              <div style={{ fontSize: '12px', color: '#8A93A0' }}>{bestCampaign ? `₦${bestCampaign.revenue.toLocaleString()} · ${bestCampaign.delivered} delivered` : 'No landing-page orders in this range yet.'}</div>
+            </div>
+          </div>
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '4px' }}>By lead source</h3>
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '10px' }}>Ad spend is matched to a source by name from Finance → Expenses (category "Ad spend", channel field) — log spend there with a channel like "Facebook" or "TikTok" to see CAC and ROAS here.</p>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>Source</th><th>Orders</th><th>Delivered</th><th>Conversion</th><th>Revenue</th><th>Ad spend</th><th>CAC</th><th>ROAS</th></tr></thead>
+            <tbody>
+              {sourceStats.length === 0 && <tr><td colSpan="8" className="empty">No orders with a lead source, and no ad spend logged, in this range yet.</td></tr>}
+              {sourceStats.map(s => (
+                <tr key={s.source}>
+                  <td>{s.source}</td>
+                  <td>{s.orders}</td>
+                  <td>{s.delivered}</td>
+                  <td>{s.conversion.toFixed(0)}%</td>
+                  <td>₦{s.revenue.toLocaleString()}</td>
+                  <td>{s.spend > 0 ? '₦' + s.spend.toLocaleString() : '—'}</td>
+                  <td>{s.cac !== null ? '₦' + s.cac.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}</td>
+                  <td>{s.roas !== null ? s.roas.toFixed(2) + 'x' : '—'}</td>
+                </tr>
+              ))}
+              {(() => {
+                const unset = scoped.filter(o => !o.lead_source);
+                if (unset.length === 0) return null;
+                const unsetDelivered = unset.filter(o => o.status === 'Delivered');
+                const unsetRevenue = unsetDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
+                return (
+                  <tr><td style={{ color: '#8A93A0' }}>Not set</td><td>{unset.length}</td><td>{unsetDelivered.length}</td><td>{unset.length ? ((unsetDelivered.length / unset.length) * 100).toFixed(0) : 0}%</td><td>₦{unsetRevenue.toLocaleString()}</td><td>—</td><td>—</td><td>—</td></tr>
                 );
-              })}
+              })()}
+            </tbody>
+          </table>
+
+          {unmatchedSpend.length > 0 && (
+            <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '18px' }}>
+              Also logged, not matched to a lead source: {unmatchedSpend.map(([k, v]) => `${k} (₦${v.toLocaleString()})`).join(', ')}.
+            </p>
+          )}
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By campaign (landing pages)</h3>
+          {campaignStats.length === 0 ? (
+            <div className="empty" style={{ marginBottom: '24px' }}>No landing-page orders in this range yet.</div>
+          ) : (
+            <table style={{ marginBottom: '24px' }}>
+              <thead><tr><th>Campaign</th><th>Product</th><th>Orders</th><th>Delivered</th><th>Conversion</th><th>Revenue</th></tr></thead>
+              <tbody>
+                {campaignStats.map((c, i) => (
+                  <tr key={c.id}>
+                    <td>{i === 0 && '🏆 '}{c.name}</td>
+                    <td>{c.product}</td>
+                    <td>{c.orders}</td>
+                    <td>{c.delivered}</td>
+                    <td>{c.conversion.toFixed(0)}%</td>
+                    <td>₦{c.revenue.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      {section === 'team' && (
+        <>
+          <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
+          <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
+        </>
+      )}
+
+      {section === 'state' && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '0 0 10px' }}>By state</h3>
+          <table>
+            <thead><tr><th>State</th><th>Agents</th><th>Orders sent</th><th>Delivered</th></tr></thead>
+            <tbody>
+              {stateRows.length === 0 && <tr><td colSpan="4" className="empty">No dispatch agents assigned to a state yet.</td></tr>}
+              {stateRows.map(([state, d]) => (
+                <tr key={state}><td>{state}</td><td>{d.agents}</td><td>{d.sent}</td><td>{d.delivered}</td></tr>
+              ))}
             </tbody>
           </table>
         </>
       )}
-
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By status</h3>
-      <table style={{ marginBottom: '24px' }}>
-        <thead><tr><th>Status</th><th>Orders in this range</th></tr></thead>
-        <tbody>
-          {STATUSES.map(s => (
-            <tr key={s}><td><span className={'pill ' + pillClass(s)}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
-          ))}
-        </tbody>
-      </table>
-
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By lead source</h3>
-      <table style={{ marginBottom: '24px' }}>
-        <thead><tr><th>Source</th><th>Orders</th><th>Delivered</th><th>Revenue</th></tr></thead>
-        <tbody>
-          {LEAD_SOURCES.map(src => {
-            const srcOrders = scoped.filter(o => o.lead_source === src);
-            if (srcOrders.length === 0) return null;
-            const srcDelivered = srcOrders.filter(o => o.status === 'Delivered');
-            const srcRevenue = srcDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
-            return (
-              <tr key={src}>
-                <td>{src}</td>
-                <td>{srcOrders.length}</td>
-                <td>{srcDelivered.length}</td>
-                <td>₦{srcRevenue.toLocaleString()}</td>
-              </tr>
-            );
-          })}
-          {(() => {
-            const unset = scoped.filter(o => !o.lead_source);
-            if (unset.length === 0) return null;
-            const unsetDelivered = unset.filter(o => o.status === 'Delivered');
-            const unsetRevenue = unsetDelivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
-            return (
-              <tr><td style={{ color: '#8A93A0' }}>Not set</td><td>{unset.length}</td><td>{unsetDelivered.length}</td><td>₦{unsetRevenue.toLocaleString()}</td></tr>
-            );
-          })()}
-        </tbody>
-      </table>
-
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Failed deliveries</h3>
-      <div className="stats" style={{ marginBottom: '10px' }}>
-        <div className="stat"><div className="stat-num">{failedDeliveries.length}</div><div className="stat-label">Failed delivery attempts in this range</div></div>
-      </div>
-      {failedDeliveries.length === 0 ? (
-        <div className="empty" style={{ marginBottom: '24px' }}>No failed deliveries in this range.</div>
-      ) : (
-        <table style={{ marginBottom: '24px' }}>
-          <thead><tr><th>Order</th><th>Customer</th><th>Staff</th><th>Dispatch</th><th>Fee</th><th>Reason</th><th>When</th></tr></thead>
-          <tbody>
-            {failedDeliveries.map(o => (
-              <tr key={o.id}>
-                <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
-                <td>{o.customer}</td>
-                <td>{o.staff_id ? (profiles.find(p => p.id === o.staff_id) || {}).full_name || '—' : '—'}</td>
-                <td>{o.dispatch_id ? (profiles.find(p => p.id === o.dispatch_id) || {}).full_name || '—' : '—'}</td>
-                <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
-                <td style={{ fontSize: '12.5px', maxWidth: '240px' }}>{(latestRemarks && latestRemarks[o.id] && latestRemarks[o.id].note) || <span style={{ color: '#8A93A0' }}>No remark recorded</span>}</td>
-                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
-      <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
-
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '24px 0 10px' }}>By state</h3>
-      <table>
-        <thead><tr><th>State</th><th>Agents</th><th>Orders sent</th><th>Delivered</th></tr></thead>
-        <tbody>
-          {stateRows.length === 0 && <tr><td colSpan="4" className="empty">No dispatch agents assigned to a state yet.</td></tr>}
-          {stateRows.map(([state, d]) => (
-            <tr key={state}><td>{state}</td><td>{d.agents}</td><td>{d.sent}</td><td>{d.delivered}</td></tr>
-          ))}
-        </tbody>
-      </table>
 
       {detailPerson && (
         <PersonDetailModal
