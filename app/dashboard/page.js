@@ -411,6 +411,8 @@ function DashboardInner() {
     : profile.role === 'staff' ? orders.filter(o => o.staff_id === profile.id)
     : profile.role === 'dispatch' ? orders.filter(o => o.dispatch_id === profile.id)
     : orders.filter(o => o.created_by === profile.id);
+  // Reports, summaries, commission, and finance views should never count test/demo orders.
+  const reportOrders = orders.filter(o => !o.is_test);
 
   const roleLabel = { admin: 'Admin', staff: 'Staff', dispatch: 'Dispatch partner', manager: 'Manager', logistics: 'Logistics Manager', marketer: 'Marketer', inventory: 'Inventory Manager' }[profile.role] || profile.role;
 
@@ -489,23 +491,23 @@ function DashboardInner() {
 
       <div className="main">
         <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(true)}>☰</button>
-        {isAdmin && page === 'dashboard' && <AdminOverview orders={orders} products={products} profiles={profiles} />}
+        {isAdmin && page === 'dashboard' && <AdminOverview orders={reportOrders} products={products} profiles={profiles} />}
         {isAdmin && page === 'orders' && <OrdersPage orders={orders} products={products} profiles={profiles} isAdmin profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} lastSeen={lastSeen} session={session} refresh={refreshAll} />}
         {isAdmin && page === 'products' && <ProductsPage products={products} orders={orders} packages={packages} profiles={profiles} refresh={refreshAll} />}
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
         {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
-        {isAdmin && page === 'reports' && <ReportsPage orders={orders} profiles={profiles} products={products} session={session} />}
+        {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} products={products} productSets={productSets} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
         {page === 'notifications' && <NotificationsPage profile={profile} />}
-        {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={orders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
-        {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={orders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
-        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={orders} profiles={profiles} session={session} />}
+        {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={reportOrders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
+        {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={reportOrders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
+        {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} />}
 
         {profile.role === 'staff' && page === 'dashboard' && <OrdersPage orders={myOrders} products={products} profiles={profiles} title="My orders" myId={profile.id} myRole="staff" profile={profile} settings={settings} dispatchCompanies={dispatchCompanies} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} session={session} refresh={refreshAll} />}
         {profile.role === 'staff' && page === 'unassigned' && <UnassignedPage orders={orders.filter(o => !o.staff_id)} products={products} myId={profile.id} profile={profile} refresh={refreshAll} />}
-        {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={orders} products={products} session={session} />}
+        {profile.role === 'staff' && page === 'commission' && <CommissionPage profile={profile} orders={reportOrders} products={products} session={session} />}
 
         {profile.role === 'dispatch' && page === 'dashboard' && <DispatchPage orders={myOrders} products={products} packages={packages} productSets={productSets} latestRemarks={latestRemarks} upsellsByOrder={upsellsByOrder} profile={profile} refresh={refreshAll} />}
         {profile.role === 'dispatch' && page === 'mystock' && <MyStockPage profile={profile} agentStock={agentStock} products={products} />}
@@ -587,6 +589,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
   const [giftQuantity, setGiftQuantity] = useState(order ? order.gift_quantity || 0 : 0);
   const [state, setState] = useState(order ? order.state || '' : '');
   const [dispatchId, setDispatchId] = useState(order ? order.dispatch_id || '' : '');
+  const [isTest, setIsTest] = useState(order ? !!order.is_test : false);
   const [stockError, setStockError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const productPackages = (packages || []).filter(p => p.product_id === productId);
@@ -621,6 +624,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
           package_id: null, gift_quantity: 0,
           state: state || null,
           dispatch_id: dispatchId || null,
+          is_test: isTest,
         });
       } finally {
         setSubmitting(false);
@@ -649,6 +653,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         gift_quantity: giftProduct ? (parseInt(giftQuantity, 10) || 0) : 0,
         state: state || null,
         dispatch_id: dispatchId || null,
+        is_test: isTest,
       });
     } finally {
       setSubmitting(false);
@@ -780,6 +785,12 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         <label>Notes (optional)</label>
         <textarea value={notes} onChange={e => setNotes(e.target.value)} />
         {stockError && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '10px' }}>{stockError}</p>}
+        {isAdmin && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '14px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={isTest} onChange={e => setIsTest(e.target.checked)} style={{ width: 'auto' }} />
+            <span style={{ fontSize: '12.5px', color: '#4B5566' }}>Mark as test order (excluded from reports)</span>
+          </label>
+        )}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={save} disabled={submitting}>{submitting ? 'Saving…' : (order ? 'Save changes' : 'Create order')}</button>
@@ -1554,7 +1565,15 @@ function OrderIdCell({ order }) {
   const ref = order.id.slice(0, 8);
   return (
     <div>
-      <div className="oid" style={{ fontWeight: 600 }}>{order.serial_number ? '#' + order.serial_number : '—'}</div>
+      <div className="oid" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}>
+        {order.serial_number ? '#' + order.serial_number : '—'}
+        {order.is_test && (
+          <span
+            title="Test order — excluded from reports"
+            style={{ background: '#1B2430', color: '#fff', fontSize: '9px', fontWeight: 700, padding: '1px 5px', borderRadius: '4px', letterSpacing: '.03em' }}
+          >TEST</span>
+        )}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
         <span className="oid" style={{ fontSize: '10.5px', color: '#8A93A0' }}>{ref}</span>
         <button

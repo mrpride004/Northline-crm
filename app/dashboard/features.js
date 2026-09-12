@@ -162,6 +162,7 @@ export function getCycleStart(date) {
 }
 
 export async function recordCommissionForOrder(order) {
+  if (order.is_test) return; // test/demo orders never generate real commission
   if (!order.staff_id) return;
   if (!order.product_id && !order.set_id) return;
   const { data: rule } = order.set_id
@@ -199,6 +200,7 @@ export async function reverseCommissionForOrder(orderId) {
 export async function recordFreeCommissionForOrder(order) {
   const { data: fresh } = await supabase.from('orders').select('*').eq('id', order.id).maybeSingle();
   if (!fresh || !fresh.staff_id) return;
+  if (fresh.is_test) return; // test/demo orders never generate real commission
   if (fresh.status !== 'Delivered' || fresh.payment_status !== 'Paid') return;
   const { data: rule } = await supabase.from('free_commission_rules').select('*').eq('active', true).limit(1).maybeSingle();
   if (!rule || !rule.amount || rule.amount <= 0) return;
