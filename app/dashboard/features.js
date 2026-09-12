@@ -5632,6 +5632,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
     const lineArray = Object.values(lines).map(L => ({
       ...L,
       closingRate: L.orders > 0 ? L.deliveredPaid / L.orders : 0,
+      grossProfit: L.revenue - L.cogs - L.packaging - L.gift,
       netProfit: L.revenue - L.cogs - L.packaging - L.delivery - L.commission - L.gift - L.waybill - L.adSpend,
     })).sort((a, b) => b.netProfit - a.netProfit);
 
@@ -5649,11 +5650,12 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
     const adSpend = expensesList.filter(e => e.category === 'ad_spend').reduce((s, e) => s + Number(e.amount || 0), 0);
     const salary = expensesList.filter(e => e.category === 'salary').reduce((s, e) => s + Number(e.amount || 0), 0);
     const other = expensesList.filter(e => e.category === 'other').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const grossProfit = revenue - cogs - packaging - gift;
     const netProfit = revenue - cogs - packaging - delivery - commission - gift - waybill - adSpend - salary - other;
     const closingRate = ordersList.length > 0 ? paidOrders.length / ordersList.length : 0;
     return {
       lines: lineArray,
-      totals: { orders: ordersList.length, deliveredPaid: paidOrders.length, closingRate, revenue, cogs, packaging, delivery, commission, gift, waybill, adSpend, salary, other, netProfit },
+      totals: { orders: ordersList.length, deliveredPaid: paidOrders.length, closingRate, revenue, cogs, packaging, delivery, commission, gift, waybill, adSpend, salary, other, grossProfit, netProfit },
     };
   }
 
@@ -5698,8 +5700,9 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
       // multiply a product's freight/ad cost by however many packages it has.
       const waybill = expensesList.filter(e => e.category === 'waybill' && ((G.kind === 'product' && e.product_id === G.id) || (G.kind === 'set' && e.set_id === G.id))).reduce((s, e) => s + Number(e.amount || 0), 0);
       const adSpend = expensesList.filter(e => e.category === 'ad_spend' && ((G.kind === 'product' && e.product_id === G.id) || (G.kind === 'set' && e.set_id === G.id))).reduce((s, e) => s + Number(e.amount || 0), 0);
+      const grossProfit = G.revenue - G.cogs - G.packaging - G.gift;
       const netProfit = G.revenue - G.cogs - G.packaging - G.delivery - G.commission - G.gift - waybill - adSpend;
-      return { ...G, waybill, adSpend, closingRate: G.orders > 0 ? G.deliveredPaid / G.orders : 0, netProfit, children: G.children.sort((a, b) => b.revenue - a.revenue) };
+      return { ...G, waybill, adSpend, closingRate: G.orders > 0 ? G.deliveredPaid / G.orders : 0, grossProfit, netProfit, children: G.children.sort((a, b) => b.revenue - a.revenue) };
     }).sort((a, b) => (b.orders > 0) - (a.orders > 0) || b.netProfit - a.netProfit || a.name.localeCompare(b.name));
   }
 
@@ -5782,14 +5785,40 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
         )}
       </div>
 
+      {monthlyRows.length > 1 && (
+        <>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '4px' }}>Monthly trend</h3>
+          <p style={{ fontSize: '12px', color: '#8A93A0', margin: '0 0 10px' }}>Full history, regardless of the range picked above — most recent first.</p>
+          <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
+            <table>
+              <thead><tr><th>Month</th><th>Orders</th><th>Delivered &amp; paid</th><th>Revenue</th><th>Gross profit</th><th>Net profit</th></tr></thead>
+              <tbody>
+                {monthlyRows.map(m => (
+                  <tr key={m.month}>
+                    <td>{monthLabel(m.month)}</td>
+                    <td>{m.orders}</td>
+                    <td>{m.deliveredPaid}</td>
+                    <td>{money(m.revenue)}</td>
+                    <td style={{ color: m.grossProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(m.grossProfit)}</td>
+                    <td style={{ fontWeight: 600, color: m.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(m.netProfit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Company-wide, for this range</h3>
       <div className="stats" style={{ marginBottom: '10px' }}>
         <div className="stat"><div className="stat-num">{totals.orders}</div><div className="stat-label">Orders placed</div></div>
         <div className="stat"><div className="stat-num">{totals.deliveredPaid}</div><div className="stat-label">Delivered &amp; paid</div></div>
         <div className="stat"><div className="stat-num">{(totals.closingRate * 100).toFixed(1)}%</div><div className="stat-label">Closing rate</div></div>
         <div className="stat"><div className="stat-num">{money(totals.revenue)}</div><div className="stat-label">Revenue</div></div>
+        <div className="stat"><div className="stat-num" style={{ color: totals.grossProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(totals.grossProfit)}</div><div className="stat-label">Gross profit</div></div>
         <div className="stat"><div className="stat-num" style={{ color: profitColor }}>{money(totals.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
       </div>
+      <p style={{ fontSize: '11px', color: '#8A93A0', margin: '-6px 0 14px' }}>Gross profit = revenue less cost of goods, packaging &amp; free gifts. Net profit also subtracts delivery, commission, waybill, ad spend, salaries &amp; other overhead.</p>
       <div className="stats" style={{ marginBottom: '20px' }}>
         <div className="stat"><div className="stat-num">{money(totals.cogs)}</div><div className="stat-label">Cost of goods</div></div>
         <div className="stat"><div className="stat-num">{money(totals.packaging)}</div><div className="stat-label">Packaging</div></div>
@@ -5861,6 +5890,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                 <div className="stat"><div className="stat-num">{focusedGroup.deliveredPaid}</div><div className="stat-label">Delivered &amp; paid</div></div>
                 <div className="stat"><div className="stat-num">{(focusedGroup.closingRate * 100).toFixed(0)}%</div><div className="stat-label">Closing rate</div></div>
                 <div className="stat"><div className="stat-num">{money(focusedGroup.revenue)}</div><div className="stat-label">Revenue</div></div>
+                <div className="stat"><div className="stat-num" style={{ color: focusedGroup.grossProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(focusedGroup.grossProfit)}</div><div className="stat-label">Gross profit</div></div>
                 <div className="stat"><div className="stat-num" style={{ color: focusedGroup.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(focusedGroup.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
               </div>
               <div className="stats" style={{ marginBottom: '16px' }}>
