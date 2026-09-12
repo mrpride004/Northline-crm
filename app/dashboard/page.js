@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
-import { STATUSES, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub } from './features';
+import { STATUSES, STAFF_ASSIGNABLE_STATUSES, pillClass, logEvent, orderTotal, sendConfirmation, forwardToDispatchCompany, ReportsPage, InventoryPage, OrderHistoryModal, CustomerHistoryModal, NotificationsBell, NIGERIA_STATES, AgentStockPage, MyStockPage, ConfirmOrderModal, SettingsPage, SubmitterView, ProductPackagesModal, StatusRemarkModal, copyToClipboard, buildOrderSummary, PersonDetailModal, CommissionRuleModal, CommissionPage, AdminCommissionPage, recordCommissionForOrder, reverseCommissionForOrder, recordFreeCommissionForOrder, statusRowColor, AddUpsellModal, RequestCorrectionModal, CorrectionsPage, UpsellRulesPage, UpsellsPage, SuspiciousActivityPage, getCurrentPackage, activeUpsellFor, showOrderAlert, playNotificationSound, enablePushNotifications, sendPushNotification, notifyUsers, CommissionHub, InventoryHub, silentlyRelinkPush, MessagesPage, ProductSetsPage, setStockLabel, DailySummaryPage, showToast, NotificationsPage, FinanceHub, FailedDeliveriesPage } from './features';
 
 const APP_SECTIONS = [
   { key: 'orders', label: 'All orders' },
@@ -451,12 +451,14 @@ function DashboardInner() {
     ...(profile.active ? [{ key: 'unassigned', label: 'Unassigned pool', count: orders.filter(o => !o.staff_id).length }] : []),
     { key: 'commission', label: 'My Commission' },
     { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'faileddeliveries', label: 'Failed deliveries', count: myOrders.filter(o => o.status === 'Failed Delivery').length },
     { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : profile.role === 'dispatch' ? [
     { key: 'dashboard', label: 'My deliveries', count: myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length },
     { key: 'mystock', label: 'My stock' },
     { key: 'dailysummary', label: 'Daily summary' },
+    { key: 'faileddeliveries', label: 'Failed deliveries', count: myOrders.filter(o => o.status === 'Failed Delivery').length },
     { key: 'notifications', label: 'Notifications', count: unreadNotificationCount },
     { key: 'messages', label: 'Messages', count: unreadMessageCount },
   ] : isInventoryManager ? [
@@ -478,7 +480,7 @@ function DashboardInner() {
       <div className={'mobile-backdrop' + (mobileMenuOpen ? ' mobile-open' : '')} onClick={() => setMobileMenuOpen(false)} />
       <div className={'sidebar' + (mobileMenuOpen ? ' mobile-open' : '')}>
         <div className="brand">
-          <p className="brand-name">Trailblazer</p>
+          <p className="brand-name"><span className="logo-d">D</span>Trailblazer</p>
           <div className="brand-role">{profile.full_name} · {roleLabel}</div>
         </div>
         <div className="nav">
@@ -514,11 +516,12 @@ function DashboardInner() {
         {isAdmin && page === 'inventory' && <InventoryHub products={products} orders={orders} profiles={profiles} agentStock={agentStock} refresh={refreshAll} />}
         {isAdmin && page === 'team' && <TeamPage profiles={profiles} orders={orders} products={products} session={session} lastSeen={lastSeen} refresh={refreshAll} onOpenPermissions={(id) => { setFocusPersonId(id); setPage('permissions'); }} />}
         {isAdmin && page === 'permissions' && <PermissionsPage profiles={profiles} products={products} roleDefaults={roleDefaults} session={session} focusPersonId={focusPersonId} onFocusConsumed={() => setFocusPersonId(null)} refresh={refreshAll} />}
-        {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} />}
+        {isAdmin && page === 'reports' && <ReportsPage orders={reportOrders} profiles={profiles} products={products} session={session} latestRemarks={latestRemarks} />}
         {isAdmin && page === 'settings' && <SettingsPage settings={settings} profiles={profiles} products={products} productSets={productSets} session={session} profile={profile} refresh={refreshAll} />}
         {page === 'messages' && <MessagesPage profile={profile} />}
         {page === 'notifications' && <NotificationsPage profile={profile} />}
         {page === 'dailysummary' && (profile.role === 'staff' || profile.role === 'dispatch') && <DailySummaryPage orders={reportOrders} profile={profile} profiles={profiles} isDispatch={profile.role === 'dispatch'} />}
+        {page === 'faileddeliveries' && (profile.role === 'staff' || profile.role === 'dispatch') && <FailedDeliveriesPage orders={reportOrders} products={products} productSets={productSets} packages={packages} profiles={profiles} profile={profile} isDispatch={profile.role === 'dispatch'} />}
         {isAdmin && page === 'commission' && <CommissionHub profiles={profiles} orders={reportOrders} products={products} packages={packages} productSets={productSets} session={session} profile={profile} />}
         {isAdmin && page === 'finance' && <FinanceHub products={products} productSets={productSets} packages={packages} orders={reportOrders} profiles={profiles} session={session} />}
 
@@ -1279,7 +1282,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                           </div>
                         )}
                         {o.created_by && (
-                          <div style={{ fontSize: '10.5px', color: '#2E6E62', marginTop: '3px' }}>
+                          <div style={{ fontSize: '10.5px', color: '#4F46E5', marginTop: '3px' }}>
                             ✎ Submitted by {personName(o.created_by)}
                           </div>
                         )}
@@ -1312,9 +1315,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && o.status !== 'Delivered') ? (
                       <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
-                        {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
+                        {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (s !== 'Failed Delivery' || isAdmin || s === o.status) && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
-                    ) : <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
+                    ) : <span className={'pill ' + pillClass(o.status)} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
                     {o.priority === 'High' && <span className="pill Cancelled">High</span>}
                   </div>
                   {latestRemarks && latestRemarks[o.id] && (
@@ -1383,9 +1386,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                   <OrderIdCell order={o} />
                   {isAdmin || (myRole === 'staff' && (o.staff_id === myId || !o.staff_id) && o.status !== 'Delivered') ? (
                     <select className="status-sel" value={o.status} style={{ backgroundColor: statusRowColor(o.status), border: 'none' }} onChange={e => setStatusChanging({ order: o, newStatus: e.target.value })}>
-                      {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
+                      {STATUSES.filter(s => (s !== 'New' || o.status === 'New') && (s !== 'Failed Delivery' || isAdmin || s === o.status) && (isAdmin || !profile?.allowed_statuses || profile.allowed_statuses.length === 0 || profile.allowed_statuses.includes(s) || s === o.status)).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
-                  ) : <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
+                  ) : <span className={'pill ' + pillClass(o.status)} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>}
                 </div>
                 <div style={{ fontSize: '14px', fontWeight: 600 }}>
                   {current.setId ? <>📦 {setName(current.setId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</> : <>{prodName(current.productId)}{current.quantity > 1 ? ` ×${current.quantity}` : ''}</>}
@@ -1404,7 +1407,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
                     </div>
                   </div>
                 )}
-                {o.created_by && <div style={{ fontSize: '11px', color: '#2E6E62', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>}
+                {o.created_by && <div style={{ fontSize: '11px', color: '#4F46E5', marginTop: '3px' }}>✎ Submitted by {personName(o.created_by)}</div>}
 
                 <div className="mobile-card-row"><span className="mobile-card-label">Customer</span><span className="mobile-card-value"><span className="link-btn" onClick={() => setCustomerView(o)}>{o.customer}</span></span></div>
                 <div className="mobile-card-row"><span className="mobile-card-label">Phone</span><span className="mobile-card-value"><a href={`tel:${o.phone}`}>{o.phone}</a></span></div>
@@ -1846,7 +1849,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                   {o.status === 'New' ? (
                     <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
                   ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
-                    <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
+                    <span className={'pill ' + pillClass(o.status)} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
                   ) : (
                     <select
                       className="status-sel"
@@ -1889,7 +1892,7 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
                   {o.status === 'New' ? (
                     <span style={{ fontSize: '11.5px', color: '#8A93A0' }}>Awaiting confirmation</span>
                   ) : o.status === 'Delivered' || o.status === 'Cancelled' ? (
-                    <span className={'pill ' + o.status} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
+                    <span className={'pill ' + pillClass(o.status)} style={{ backgroundColor: statusRowColor(o.status) }}>{o.status}</span>
                   ) : (
                     <select
                       className="status-sel"
@@ -2418,7 +2421,7 @@ function PermissionsPage({ profiles, products, roleDefaults, focusPersonId, onFo
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 {activeRole === 'dispatch' && (
                   statePrefs[p.state]?.dispatch_id === p.id && statePrefs[p.state]?.active ? (
-                    <button className="btn" style={{ background: '#EAF4F1', color: '#1F4D44' }} onClick={() => clearAutoAssign(p)}>Auto-assign: ON — turn off</button>
+                    <button className="btn" style={{ background: '#ECEAFB', color: '#3730A3' }} onClick={() => clearAutoAssign(p)}>Auto-assign: ON — turn off</button>
                   ) : (
                     <button className="link-btn" onClick={() => setAsAutoAssign(p)}>Set as auto-assign for {p.state || 'their state'}</button>
                   )
@@ -2507,7 +2510,7 @@ function RoleDefaultsCard({ role, roleLabelText, defaults, fields, products, onS
         <>
           <label className="field-label">Which statuses can they set an order to?</label>
           <div style={{ border: '1px solid #DEDAD0', borderRadius: '4px', padding: '8px', maxHeight: '150px', overflowY: 'auto', marginBottom: '6px' }}>
-            {STATUSES.map(s => (
+            {STAFF_ASSIGNABLE_STATUSES.map(s => (
               <label key={s} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '4px 2px' }}>
                 <input type="checkbox" checked={statuses.includes(s)} onChange={() => toggleIn(s, statuses, setStatuses)} />
                 {s}
@@ -2545,7 +2548,7 @@ function RoleDefaultsCard({ role, roleLabelText, defaults, fields, products, onS
       <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: 0, marginBottom: '12px' }}>Leave unchecked for the normal default access for this role.</p>
 
       <button className="btn primary" onClick={save}>Save defaults for {roleLabelText}</button>
-      {saved && <span style={{ fontSize: '12px', color: '#1F4D44', marginLeft: '10px' }}>{saved}</span>}
+      {saved && <span style={{ fontSize: '12px', color: '#3730A3', marginLeft: '10px' }}>{saved}</span>}
     </div>
   );
 }
@@ -2622,7 +2625,7 @@ function PersonOverrideModal({ person, defaults, fields, products, commissionRul
         <ArrayOverrideField
           label="Which statuses can they set an order to?"
           mode={statusMode} setMode={setStatusMode} list={statusList} setList={setStatusList}
-          options={STATUSES.map(s => ({ key: s, label: s }))}
+          options={STAFF_ASSIGNABLE_STATUSES.map(s => ({ key: s, label: s }))}
           defaultPreview={(defaults.allowed_statuses && defaults.allowed_statuses.length > 0) ? defaults.allowed_statuses.join(', ') : 'all statuses'}
         />
       )}

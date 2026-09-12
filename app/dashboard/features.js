@@ -2,7 +2,13 @@
 import { useState, useEffect, Fragment } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
-const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Unverified', 'Rescheduled', 'Cancelled'];
+const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Unverified', 'Rescheduled', 'Failed Delivery', 'Cancelled'];
+
+// Statuses a staff member can ever be granted (via role default or personal
+// override) — 'Failed Delivery' is deliberately left out here, not just
+// unchecked by default: only admin/dispatch can ever set it, so it doesn't
+// belong in the staff permission picker at all.
+const STAFF_ASSIGNABLE_STATUSES = STATUSES.filter(s => s !== 'Failed Delivery');
 
 export function statusRowColor(status) {
   const map = {
@@ -14,9 +20,17 @@ export function statusRowColor(status) {
     Unreachable: '#F0C889',
     Unverified: '#E06BB8',
     Rescheduled: '#D7BEEC',
+    'Failed Delivery': '#F0A882',
     Cancelled: '#EFBEBA',
   };
   return map[status] || 'transparent';
+}
+
+// CSS class names can't contain spaces as a single token, so "Failed
+// Delivery" becomes "Failed-Delivery" for the .pill.<class> styling —
+// display text everywhere else still uses the real "Failed Delivery" value.
+export function pillClass(status) {
+  return String(status || '').replace(/\s+/g, '-');
 }
 
 export async function logEvent({ order_id, actor_id, actor_name, event_type, from_status, to_status, note }) {
@@ -105,7 +119,7 @@ export function showToast(message) {
   if (typeof document === 'undefined') return;
   const el = document.createElement('div');
   el.textContent = message;
-  el.style.cssText = 'position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(0); background:#1F4D44; color:#fff; padding:11px 20px; border-radius:24px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.3); opacity:0; transition:opacity .18s ease, transform .18s ease;';
+  el.style.cssText = 'position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(0); background:#3730A3; color:#fff; padding:11px 20px; border-radius:24px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.3); opacity:0; transition:opacity .18s ease, transform .18s ease;';
   document.body.appendChild(el);
   requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(-50%) translateY(-6px)'; });
   setTimeout(() => {
@@ -119,7 +133,7 @@ export function showOrderAlert(message) {
   if (typeof document === 'undefined') return;
   const el = document.createElement('div');
   el.textContent = message;
-  el.style.cssText = 'position:fixed; top:16px; left:50%; transform:translateX(-50%) translateY(-12px); background:#1F4D44; color:#fff; padding:13px 22px; border-radius:10px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.35); opacity:0; transition:opacity .2s ease, transform .2s ease; cursor:pointer; max-width:90vw; text-align:center;';
+  el.style.cssText = 'position:fixed; top:16px; left:50%; transform:translateX(-50%) translateY(-12px); background:#3730A3; color:#fff; padding:13px 22px; border-radius:10px; font-size:13.5px; font-weight:600; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,.35); opacity:0; transition:opacity .2s ease, transform .2s ease; cursor:pointer; max-width:90vw; text-align:center;';
   el.onclick = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); };
   document.body.appendChild(el);
   requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(-50%) translateY(0)'; });
@@ -609,8 +623,13 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
   const isCancelling = newStatus === 'Cancelled';
   const isRescheduling = newStatus === 'Rescheduled';
   const isUnverified = newStatus === 'Unverified';
-  const showFeeField = canEditFee && (isDelivering || isCancelling);
-  const remarkMissing = isUnverified && !remark.trim();
+  const isFailedDelivery = newStatus === 'Failed Delivery';
+  // Cancelled orders never went out, so there's nothing to collect a delivery
+  // fee for — dispatch no longer gets a fee field for that one. Failed
+  // Delivery is a real attempt (fuel/time spent, sometimes a partial
+  // collection), so it keeps the fee field just like Delivered does.
+  const showFeeField = canEditFee && (isDelivering || isFailedDelivery);
+  const remarkMissing = (isUnverified || isFailedDelivery) && !remark.trim();
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -619,6 +638,11 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
         {isUnverified && isAdmin && (
           <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-6px', marginBottom: '12px' }}>
             For a customer who placed an order but isn't looking serious, or kept giving excuses on the confirmation call. Record exactly what they said below — this is what makes the status useful.
+          </p>
+        )}
+        {isFailedDelivery && (
+          <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-6px', marginBottom: '12px' }}>
+            The delivery attempt didn't go through — customer unavailable, refused at the door, wrong address, etc. Say what happened below; it'll show on the Failed Deliveries report.
           </p>
         )}
         {showFeeField && (
@@ -644,13 +668,17 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
             <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} autoFocus />
           </>
         )}
-        <label style={{ marginTop: (showFeeField || isRescheduling) ? '14px' : 0 }}>Remark {isUnverified ? '— what did they say?' : '(optional)'}</label>
+        <label style={{ marginTop: (showFeeField || isRescheduling) ? '14px' : 0 }}>Remark {(isUnverified || isFailedDelivery) ? '— what happened?' : '(optional)'}</label>
         <textarea
           value={remark} onChange={e => setRemark(e.target.value)}
-          placeholder={isUnverified ? "e.g. \"Said they'll call back, never did\", \"Kept asking for a discount then went quiet\", \"Claims they didn't place the order\"" : 'Anything worth noting about this update'}
+          placeholder={
+            isUnverified ? "e.g. \"Said they'll call back, never did\", \"Kept asking for a discount then went quiet\", \"Claims they didn't place the order\""
+            : isFailedDelivery ? "e.g. \"Customer didn't pick up after 3 tries\", \"Wrong address, no landmark\", \"Refused at the door\""
+            : 'Anything worth noting about this update'
+          }
           autoFocus={!showFeeField && !isRescheduling}
         />
-        {remarkMissing && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '4px' }}>A remark is required for Unverified — it's the whole point of the status.</p>}
+        {remarkMissing && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '4px' }}>A remark is required for {isFailedDelivery ? 'Failed Delivery' : 'Unverified'} — it's the whole point of the status.</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" disabled={remarkMissing} onClick={() => onConfirm({ remark: remark.trim(), fee: parseFloat(fee) || 0, rescheduleDate, paidNow })}>Confirm</button>
@@ -763,7 +791,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
         {!loadedPref ? null : order.dispatch_id ? (
           <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '10px' }}>Already assigned to a dispatch partner — confirming will notify them.</p>
         ) : willAutoAssign ? (
-          <p style={{ fontSize: '11.5px', color: '#2E6E62', marginTop: '10px' }}>
+          <p style={{ fontSize: '11.5px', color: '#4F46E5', marginTop: '10px' }}>
             ✓ Will automatically send to {chosenAgent.full_name} in {stateValue} on confirmation
             {assignMode === 'preferred' ? ' (admin-preferred agent)' : assignMode === 'round_robin' ? ' (load-balanced — has the fewest active deliveries right now)' : ''}.
           </p>
@@ -780,7 +808,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
 }
 
 
-export function ReportsPage({ orders, profiles, products, session }) {
+export function ReportsPage({ orders, profiles, products, session, latestRemarks }) {
   const [range, setRange] = useState('today');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -855,6 +883,7 @@ export function ReportsPage({ orders, profiles, products, session }) {
   const scoped = orders.filter(inRange);
   const delivered = scoped.filter(o => o.status === 'Delivered');
   const cancelled = scoped.filter(o => o.status === 'Cancelled');
+  const failedDeliveries = scoped.filter(o => o.status === 'Failed Delivery').sort((a, b) => new Date(b.status_updated_at || b.created_at) - new Date(a.status_updated_at || a.created_at));
   const revenue = delivered.reduce((sum, o) => sum + orderTotal(o, upsellsByOrder[o.id]), 0);
   const totalDeliveryCharges = delivered.reduce((sum, o) => sum + Number(o.delivery_fee || 0), 0);
 
@@ -972,10 +1001,35 @@ export function ReportsPage({ orders, profiles, products, session }) {
         <thead><tr><th>Status</th><th>Orders in this range</th></tr></thead>
         <tbody>
           {STATUSES.map(s => (
-            <tr key={s}><td><span className={'pill ' + s}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
+            <tr key={s}><td><span className={'pill ' + pillClass(s)}>{s}</span></td><td>{scoped.filter(o => o.status === s).length}</td></tr>
           ))}
         </tbody>
       </table>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Failed deliveries</h3>
+      <div className="stats" style={{ marginBottom: '10px' }}>
+        <div className="stat"><div className="stat-num">{failedDeliveries.length}</div><div className="stat-label">Failed delivery attempts in this range</div></div>
+      </div>
+      {failedDeliveries.length === 0 ? (
+        <div className="empty" style={{ marginBottom: '24px' }}>No failed deliveries in this range.</div>
+      ) : (
+        <table style={{ marginBottom: '24px' }}>
+          <thead><tr><th>Order</th><th>Customer</th><th>Staff</th><th>Dispatch</th><th>Fee</th><th>Reason</th><th>When</th></tr></thead>
+          <tbody>
+            {failedDeliveries.map(o => (
+              <tr key={o.id}>
+                <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
+                <td>{o.customer}</td>
+                <td>{o.staff_id ? (profiles.find(p => p.id === o.staff_id) || {}).full_name || '—' : '—'}</td>
+                <td>{o.dispatch_id ? (profiles.find(p => p.id === o.dispatch_id) || {}).full_name || '—' : '—'}</td>
+                <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
+                <td style={{ fontSize: '12.5px', maxWidth: '240px' }}>{(latestRemarks && latestRemarks[o.id] && latestRemarks[o.id].note) || <span style={{ color: '#8A93A0' }}>No remark recorded</span>}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <PerformanceTable title="Staff performance (top performers first)" rows={staffPerf} roleLabel="staff" />
       <PerformanceTable title="Dispatch performance (top performers first)" rows={dispatchPerf} roleLabel="dispatch partners" />
@@ -1357,7 +1411,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
             <div style={{ fontSize: '11px', color: '#8A93A0', marginTop: '4px' }}>
               Sent {new Date(m.created_at).toLocaleString()} ·{' '}
               {m.read_at ? (
-                <span style={{ color: '#2E6E62' }}>Read {new Date(m.read_at).toLocaleString()}</span>
+                <span style={{ color: '#4F46E5' }}>Read {new Date(m.read_at).toLocaleString()}</span>
               ) : (
                 <span style={{ color: '#B0483F', fontWeight: 600 }}>Unread</span>
               )}
@@ -1546,7 +1600,7 @@ export function SubmitterView({ profile, products, orders, refresh }) {
                   <td className="oid">{o.id.slice(0, 8)}</td>
                   <td>{prod ? prod.name : '—'}</td>
                   <td>{o.customer}</td>
-                  <td><span className={'pill ' + o.status}>{o.status}</span></td>
+                  <td><span className={'pill ' + pillClass(o.status)}>{o.status}</span></td>
                 </tr>
               );
             })}
@@ -2049,7 +2103,7 @@ export function CustomerHistoryModal({ phone, customer, orders, products, onClos
             <div key={o.id} style={{ borderBottom: '1px solid #DEDAD0', padding: '10px 0', fontSize: '13px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>{prodName(o.product_id)} × {o.quantity || 1}</span>
-                <span className={'pill ' + o.status}>{o.status}</span>
+                <span className={'pill ' + pillClass(o.status)}>{o.status}</span>
               </div>
               <div style={{ color: '#8A93A0', fontSize: '11.5px' }}>{new Date(o.created_at).toLocaleDateString()} · {o.payment_status}</div>
             </div>
@@ -2113,7 +2167,7 @@ export function NotificationsBell({ profile, isAdmin }) {
   );
 }
 
-export { STATUSES };
+export { STATUSES, STAFF_ASSIGNABLE_STATUSES };
 
 // ---------- Commission: staff-facing gamified board ----------
 export function CommissionPage({ profile, orders, products, session }) {
@@ -2224,7 +2278,7 @@ export function CommissionPage({ profile, orders, products, session }) {
         <div><h1 className="page-title">My Commission</h1><p className="page-sub">Earned automatically every time one of your orders gets paid.</p></div>
       </div>
 
-      <div style={{ background: 'linear-gradient(135deg, #1F4D44, #2E6E62)', borderRadius: '12px', padding: '28px', color: '#fff', marginBottom: '20px', textAlign: 'center' }}>
+      <div style={{ background: 'linear-gradient(135deg, #3730A3, #4F46E5)', borderRadius: '12px', padding: '28px', color: '#fff', marginBottom: '20px', textAlign: 'center' }}>
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginBottom: '6px', letterSpacing: '.5px' }}>YOUR UNCLAIMED BALANCE</div>
         <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '42px', fontWeight: 700 }}>₦{balance.toLocaleString()}</div>
         <div style={{ fontSize: '12.5px', opacity: 0.85, marginTop: '6px' }}>₦{thisWeekTotal.toLocaleString()} earned this week so far</div>
@@ -2239,7 +2293,7 @@ export function CommissionPage({ profile, orders, products, session }) {
           ) : !isClaimDay ? (
             <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens {claimOpensLabel}</span>
           ) : (
-            <button className="btn primary" onClick={claim} disabled={claiming} style={{ background: '#fff', color: '#1F4D44', fontWeight: 700, padding: '11px 28px', fontSize: '14px' }}>
+            <button className="btn primary" onClick={claim} disabled={claiming} style={{ background: '#fff', color: '#3730A3', fontWeight: 700, padding: '11px 28px', fontSize: '14px' }}>
               {claiming ? 'Claiming…' : '🎉 Claim your commission now'}
             </button>
           )}
@@ -2280,7 +2334,7 @@ export function CommissionPage({ profile, orders, products, session }) {
           <span style={{ color: '#8A93A0' }}>Needs {threshold}% to claim</span>
         </div>
         <div style={{ background: '#F0EEE8', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
-          <div style={{ width: `${Math.min(100, successRate)}%`, height: '100%', background: eligible ? '#2E6E62' : '#C6862F', transition: 'width .3s ease' }} />
+          <div style={{ width: `${Math.min(100, successRate)}%`, height: '100%', background: eligible ? '#4F46E5' : '#C6862F', transition: 'width .3s ease' }} />
         </div>
         <p style={{ fontSize: '11.5px', color: '#8A93A0', marginTop: '8px' }}>
           {myDeliveredPaid.length} paid out of {myDelivered.length} delivered orders you're on
@@ -2315,7 +2369,7 @@ export function CommissionPage({ profile, orders, products, session }) {
       <div className="list-manage">
         {claims.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No claims yet — your first one is waiting for you above.</div>}
         {claims.map(c => (
-          <div key={c.id} className="list-manage-row"><span>{new Date(c.claimed_at).toLocaleDateString()}</span><span style={{ color: '#2E6E62', fontWeight: 600 }}>₦{Number(c.amount).toLocaleString()}</span></div>
+          <div key={c.id} className="list-manage-row"><span>{new Date(c.claimed_at).toLocaleDateString()}</span><span style={{ color: '#4F46E5', fontWeight: 600 }}>₦{Number(c.amount).toLocaleString()}</span></div>
         ))}
       </div>
     </div>
@@ -2736,7 +2790,7 @@ export function AddUpsellModal({ order, products, packages, productSets, current
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontWeight: 600 }}>
               <span>Difference</span>
-              <span style={{ color: isUpgrade ? '#2E6E62' : '#B0483F' }}>{isUpgrade ? '+' : ''}₦{(newAmount - currentAmount).toLocaleString()}</span>
+              <span style={{ color: isUpgrade ? '#4F46E5' : '#B0483F' }}>{isUpgrade ? '+' : ''}₦{(newAmount - currentAmount).toLocaleString()}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: '#8A93A0' }}>Status</span>
@@ -3177,7 +3231,7 @@ export function UpsellsPage({ products, packages, productSets, profiles }) {
                     <div key={m.id} style={{ marginBottom: '3px' }}>
                       {staffName(m.recipient_id)} —{' '}
                       {m.read_at ? (
-                        <span style={{ color: '#2E6E62' }}>Read {new Date(m.read_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                        <span style={{ color: '#4F46E5' }}>Read {new Date(m.read_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                       ) : (
                         <span style={{ color: '#B0483F', fontWeight: 600 }}>Not read yet</span>
                       )}
@@ -3710,6 +3764,7 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
     unreachable: statusChangedThatDay.filter(o => o.status === 'Unreachable').length,
     unverified: statusChangedThatDay.filter(o => o.status === 'Unverified').length,
     rescheduled: statusChangedThatDay.filter(o => o.status === 'Rescheduled').length,
+    failedDelivery: statusChangedThatDay.filter(o => o.status === 'Failed Delivery').length,
   };
 
   // Union of "received in range" and "changed status in range" for the activity list, de-duplicated.
@@ -3738,6 +3793,7 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
         <div className="stat"><div className="stat-num">{counts.unreachable}</div><div className="stat-label">Unreachable</div></div>
         <div className="stat"><div className="stat-num">{counts.unverified}</div><div className="stat-label">Unverified</div></div>
         <div className="stat"><div className="stat-num">{counts.rescheduled}</div><div className="stat-label">Rescheduled</div></div>
+        <div className="stat"><div className="stat-num">{counts.failedDelivery}</div><div className="stat-label">Failed delivery</div></div>
       </div>
       {activity.length === 0 ? (
         <div className="empty">Nothing in this range.</div>
@@ -3749,7 +3805,7 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
               <tr key={o.id}>
                 <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
                 <td>{o.customer}</td>
-                <td><span className={'pill ' + o.status}>{o.status}</span></td>
+                <td><span className={'pill ' + pillClass(o.status)}>{o.status}</span></td>
                 <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
               </tr>
             ))}
@@ -3778,6 +3834,74 @@ export function DailySummaryPage({ orders, profile, profiles, isDispatch }) {
             </tbody>
           </table>
         </>
+      )}
+    </div>
+  );
+}
+
+// ---------- Failed deliveries — staff-facing view of their own orders that ----------
+// dispatch (or admin) marked Failed Delivery, with the remark explaining why.
+export function FailedDeliveriesPage({ orders, products, productSets, packages, profiles, profile, isDispatch }) {
+  const [remarksByOrder, setRemarksByOrder] = useState({});
+
+  const mine = isDispatch ? orders.filter(o => o.dispatch_id === profile.id) : orders.filter(o => o.staff_id === profile.id);
+  const failed = mine.filter(o => o.status === 'Failed Delivery').sort((a, b) => new Date(b.status_updated_at || b.created_at) - new Date(a.status_updated_at || a.created_at));
+
+  useEffect(() => {
+    (async () => {
+      if (failed.length === 0) { setRemarksByOrder({}); return; }
+      // The failure reason is logged as its own 'remark' event alongside the
+      // 'status_change' event (see updateOrder/applyStatusChange) — the
+      // status_change row itself never carries a note. Most recent remark
+      // per order is what we want here.
+      const { data } = await supabase
+        .from('order_events')
+        .select('*')
+        .in('order_id', failed.map(o => o.id))
+        .eq('event_type', 'remark')
+        .order('created_at', { ascending: false });
+      const map = {};
+      (data || []).forEach(e => { if (!map[e.order_id]) map[e.order_id] = e; }); // most recent per order
+      setRemarksByOrder(map);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed.map(o => o.id).join(',')]);
+
+  const prodName = id => (products.find(p => p.id === id) || {}).name || '—';
+  const setName = id => ((productSets || []).find(s => s.id === id) || {}).name || '—';
+  const pkgName = id => (packages || []).find(p => p.id === id)?.name || null;
+  const personName = id => (profiles.find(p => p.id === id) || {}).full_name || '—';
+
+  return (
+    <div>
+      <div className="topbar">
+        <div><h1 className="page-title">Failed deliveries</h1><p className="page-sub">Orders {isDispatch ? 'you' : 'assigned to you'} marked Failed Delivery, with the reason.</p></div>
+      </div>
+      <div className="stats" style={{ marginBottom: '20px' }}>
+        <div className="stat"><div className="stat-num">{failed.length}</div><div className="stat-label">Failed deliveries</div></div>
+      </div>
+      {failed.length === 0 ? (
+        <div className="empty">No failed deliveries — nice.</div>
+      ) : (
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Item</th><th>{isDispatch ? 'Staff' : 'Dispatch'}</th><th>Fee</th><th>Reason</th><th>When</th></tr></thead>
+          <tbody>
+            {failed.map(o => {
+              const ev = remarksByOrder[o.id];
+              return (
+                <tr key={o.id}>
+                  <td className="oid">{o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}</td>
+                  <td>{o.customer}</td>
+                  <td>{o.set_id ? `📦 ${setName(o.set_id)}` : prodName(o.product_id)}{!o.set_id && pkgName(o.package_id) ? <div style={{ fontSize: '11px', color: '#8A93A0' }}>{pkgName(o.package_id)}</div> : null}</td>
+                  <td>{isDispatch ? personName(o.staff_id) : (o.dispatch_id ? personName(o.dispatch_id) : '—')}</td>
+                  <td>₦{Number(o.delivery_fee || 0).toLocaleString()}</td>
+                  <td style={{ fontSize: '12.5px', maxWidth: '260px' }}>{ev ? ev.note : <span style={{ color: '#8A93A0' }}>No remark recorded</span>}</td>
+                  <td style={{ fontSize: '12px', color: '#8A93A0' }}>{new Date(o.status_updated_at || o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );
@@ -4075,8 +4199,8 @@ function OrderSourceModal({ source, products, productSets, profiles, onClose }) 
             Sends fake sample data straight from your browser to the CRM, shaped using whatever mapping is filled in above. If this succeeds but your real form still doesn't, the problem is on the WordPress/WP Webhooks side. If this fails too, the problem is here in the CRM setup.
           </p>
           {testResult && (
-            <div style={{ background: testResult.ok ? '#EAF4F1' : '#FBEAE8', border: '1px solid ' + (testResult.ok ? '#2E6E62' : '#B0483F'), borderRadius: '8px', padding: '12px', marginTop: '8px' }}>
-              <div style={{ fontWeight: 600, fontSize: '12.5px', color: testResult.ok ? '#1F4D44' : '#B0483F', marginBottom: '6px' }}>
+            <div style={{ background: testResult.ok ? '#ECEAFB' : '#FBEAE8', border: '1px solid ' + (testResult.ok ? '#4F46E5' : '#B0483F'), borderRadius: '8px', padding: '12px', marginTop: '8px' }}>
+              <div style={{ fontWeight: 600, fontSize: '12.5px', color: testResult.ok ? '#3730A3' : '#B0483F', marginBottom: '6px' }}>
                 {testResult.ok ? `✓ Success — order #${testResult.json.serial_number || '?'} created` : `✕ Failed (status ${testResult.status})`}
               </div>
               <code style={{ fontSize: '10.5px', display: 'block', background: '#fff', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -4636,7 +4760,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
   const { lines: allTimeLines } = buildStats(orders, expenses);
   const bestProduct = allTimeLines.filter(l => l.orders > 0).slice().sort((a, b) => b.netProfit - a.netProfit)[0];
 
-  const profitColor = totals.netProfit >= 0 ? '#1F4D44' : '#B0483F';
+  const profitColor = totals.netProfit >= 0 ? '#3730A3' : '#B0483F';
 
   return (
     <div>
@@ -4662,14 +4786,14 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
           <div style={{ background: '#FBF6EC', border: '1px solid #E8DDBE', borderRadius: '8px', padding: '14px 18px', flex: '1 1 260px' }}>
             <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best month ever</div>
             <div style={{ fontWeight: 600, fontSize: '15px' }}>{monthLabel(bestMonth.month)}</div>
-            <div style={{ fontSize: '13px', color: bestMonth.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(bestMonth.netProfit)} net profit · {money(bestMonth.revenue)} revenue</div>
+            <div style={{ fontSize: '13px', color: bestMonth.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(bestMonth.netProfit)} net profit · {money(bestMonth.revenue)} revenue</div>
           </div>
         )}
         {bestProduct && (
-          <div style={{ background: '#EAF4F1', border: '1px solid #C7DED7', borderRadius: '8px', padding: '14px 18px', flex: '1 1 260px' }}>
+          <div style={{ background: '#ECEAFB', border: '1px solid #C7C2F0', borderRadius: '8px', padding: '14px 18px', flex: '1 1 260px' }}>
             <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best performing product/set ever</div>
             <div style={{ fontWeight: 600, fontSize: '15px' }}>{bestProduct.name}</div>
-            <div style={{ fontSize: '13px', color: '#1F4D44' }}>{money(bestProduct.netProfit)} net profit · {(bestProduct.closingRate * 100).toFixed(0)}% closing rate</div>
+            <div style={{ fontSize: '13px', color: '#3730A3' }}>{money(bestProduct.netProfit)} net profit · {(bestProduct.closingRate * 100).toFixed(0)}% closing rate</div>
           </div>
         )}
       </div>
@@ -4731,7 +4855,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
         <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', marginBottom: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
             <div>
-              <span className="pill" style={{ background: focusedGroup.kind === 'set' ? '#EAF4F1' : '#EEF2F8', color: focusedGroup.kind === 'set' ? '#1F4D44' : '#4A7FBF', border: '1px solid ' + (focusedGroup.kind === 'set' ? '#C7DED7' : '#D6E0EE'), marginRight: '8px' }}>{focusedGroup.kind === 'set' ? 'Set' : 'Product'}</span>
+              <span className="pill" style={{ background: focusedGroup.kind === 'set' ? '#ECEAFB' : '#EEF2F8', color: focusedGroup.kind === 'set' ? '#3730A3' : '#4A7FBF', border: '1px solid ' + (focusedGroup.kind === 'set' ? '#C7C2F0' : '#D6E0EE'), marginRight: '8px' }}>{focusedGroup.kind === 'set' ? 'Set' : 'Product'}</span>
               <span style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '18px', fontWeight: 600 }}>{focusedGroup.name}</span>
               {focusedGroup.sku && <span className="pill" style={{ marginLeft: '8px', background: '#F5F2EA', color: '#4B5566', border: '1px solid #DEDAD0', fontFamily: 'monospace', fontSize: '11px' }}>{focusedGroup.sku}</span>}
             </div>
@@ -4753,7 +4877,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                 <div className="stat"><div className="stat-num">{focusedGroup.deliveredPaid}</div><div className="stat-label">Delivered &amp; paid</div></div>
                 <div className="stat"><div className="stat-num">{(focusedGroup.closingRate * 100).toFixed(0)}%</div><div className="stat-label">Closing rate</div></div>
                 <div className="stat"><div className="stat-num">{money(focusedGroup.revenue)}</div><div className="stat-label">Revenue</div></div>
-                <div className="stat"><div className="stat-num" style={{ color: focusedGroup.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(focusedGroup.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
+                <div className="stat"><div className="stat-num" style={{ color: focusedGroup.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(focusedGroup.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
               </div>
               <div className="stats" style={{ marginBottom: '16px' }}>
                 <div className="stat"><div className="stat-num">{money(focusedGroup.cogs)}</div><div className="stat-label">Cost of goods</div></div>
@@ -4778,7 +4902,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                             <td>{c.orders}</td>
                             <td>{(c.closingRate * 100).toFixed(0)}%</td>
                             <td>{money(c.revenue)}</td>
-                            <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(c.netProfit)}</td>
+                            <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(c.netProfit)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -4814,7 +4938,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                         )}
                       </td>
                       <td>
-                        <span className="pill" style={{ marginRight: '6px', fontSize: '10px', background: G.kind === 'set' ? '#EAF4F1' : '#EEF2F8', color: G.kind === 'set' ? '#1F4D44' : '#4A7FBF', border: '1px solid ' + (G.kind === 'set' ? '#C7DED7' : '#D6E0EE') }}>{G.kind === 'set' ? 'Set' : 'Product'}</span>
+                        <span className="pill" style={{ marginRight: '6px', fontSize: '10px', background: G.kind === 'set' ? '#ECEAFB' : '#EEF2F8', color: G.kind === 'set' ? '#3730A3' : '#4A7FBF', border: '1px solid ' + (G.kind === 'set' ? '#C7C2F0' : '#D6E0EE') }}>{G.kind === 'set' ? 'Set' : 'Product'}</span>
                         {G.name}
                         {G.sku && <span style={{ marginLeft: '6px', fontFamily: 'monospace', fontSize: '11px', color: '#8A93A0' }}>[{G.sku}]</span>}
                         {G.orders === 0 && <span style={{ marginLeft: '6px', fontSize: '11px', color: '#8A93A0' }}>— no orders yet</span>}
@@ -4829,7 +4953,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                       <td>{money(G.gift)}</td>
                       <td>{money(G.waybill)}</td>
                       <td>{money(G.adSpend)}</td>
-                      <td style={{ fontWeight: 600, color: G.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(G.netProfit)}</td>
+                      <td style={{ fontWeight: 600, color: G.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(G.netProfit)}</td>
                     </tr>
                     {isOpen && G.children.map(c => (
                       <tr key={c.key} style={{ background: '#FAFAF7', fontSize: '12px', color: '#4B5566' }}>
@@ -4844,7 +4968,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                         <td>{money(c.commission)}</td>
                         <td>{money(c.gift)}</td>
                         <td colSpan={2} style={{ color: '#8A93A0' }}>(counted once above)</td>
-                        <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(c.netProfit)}</td>
+                        <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(c.netProfit)}</td>
                       </tr>
                     ))}
                   </Fragment>
@@ -4869,7 +4993,7 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
                   <td>{(m.closingRate * 100).toFixed(0)}%</td>
                   <td>{money(m.revenue)}</td>
                   <td>{money(m.revenue - m.netProfit)}</td>
-                  <td style={{ fontWeight: 600, color: m.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(m.netProfit)}</td>
+                  <td style={{ fontWeight: 600, color: m.netProfit >= 0 ? '#3730A3' : '#B0483F' }}>{money(m.netProfit)}</td>
                 </tr>
               ))}
             </tbody>
