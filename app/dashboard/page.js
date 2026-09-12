@@ -223,6 +223,31 @@ function DashboardInner() {
     return () => { supabase.removeChannel(channel); };
   }, [profile, session]);
 
+  // Everything else that feeds the dashboard's shared data (catalog, team,
+  // settings, and the Finance tables) — so a change an admin makes on one
+  // device shows up for everyone else with the CRM open, without anyone
+  // needing to refresh. Debounced so a burst of changes (e.g. re-saving a
+  // set's several items) triggers one refetch instead of many.
+  useEffect(() => {
+    if (!profile) return;
+    let debounceTimer = null;
+    function scheduleRefresh() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { refreshAll(); }, 400);
+    }
+    const LIVE_TABLES = [
+      'products', 'product_sets', 'product_set_items', 'product_packages',
+      'profiles', 'agent_stock', 'app_settings', 'dispatch_companies',
+      'role_permission_defaults', 'upsells',
+    ];
+    const channel = supabase.channel('catalog-live-' + profile.id);
+    LIVE_TABLES.forEach(table => {
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleRefresh);
+    });
+    channel.subscribe();
+    return () => { clearTimeout(debounceTimer); supabase.removeChannel(channel); };
+  }, [profile]);
+
   useEffect(() => {
     if (!profile) return;
     const msgChannel = supabase

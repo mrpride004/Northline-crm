@@ -4039,6 +4039,12 @@ function ProductCostsPage({ products }) {
   const [saving, setSaving] = useState({});
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const channel = supabase.channel('product-costs-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'product_costs' }, () => load())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
   async function load() {
     setLoading(true);
     const { data } = await supabase.from('product_costs').select('*');
@@ -4112,6 +4118,12 @@ function ExpensesPage({ products, productSets, profiles, session }) {
   const [filterMonth, setFilterMonth] = useState('');
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const channel = supabase.channel('expenses-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' }, () => load())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
   async function load() {
     setLoading(true);
     const { data } = await supabase.from('expenses').select('*').order('expense_date', { ascending: false });
@@ -4297,26 +4309,43 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
   const [expandedKeys, setExpandedKeys] = useState({});
   const [filterText, setFilterText] = useState('');
 
+  async function loadFinanceData() {
+    const [{ data: exp }, { data: ledger }, { data: upsells }, { data: items }, { data: costs }] = await Promise.all([
+      supabase.from('expenses').select('*'),
+      supabase.from('commission_ledger').select('*').eq('reversed', false),
+      supabase.from('upsells').select('*'),
+      supabase.from('product_set_items').select('*'),
+      supabase.from('product_costs').select('*'),
+    ]);
+    setExpenses(exp || []);
+    setCommissionLedger(ledger || []);
+    const map = {};
+    (upsells || []).forEach(u => { if (!map[u.original_order_id]) map[u.original_order_id] = []; map[u.original_order_id].push(u); });
+    setUpsellsByOrder(map);
+    setSetItems(items || []);
+    const costMap = {};
+    (costs || []).forEach(c => { costMap[c.product_id] = c; });
+    setProductCosts(costMap);
+    setLoading(false);
+  }
+
+  useEffect(() => { loadFinanceData(); }, []);
+
+  // Live: this report is only as good as the freshest expense/commission/cost
+  // data, and it's often left open on a screen — so any relevant change from
+  // anywhere else in the CRM refetches it automatically.
   useEffect(() => {
-    (async () => {
-      const [{ data: exp }, { data: ledger }, { data: upsells }, { data: items }, { data: costs }] = await Promise.all([
-        supabase.from('expenses').select('*'),
-        supabase.from('commission_ledger').select('*').eq('reversed', false),
-        supabase.from('upsells').select('*'),
-        supabase.from('product_set_items').select('*'),
-        supabase.from('product_costs').select('*'),
-      ]);
-      setExpenses(exp || []);
-      setCommissionLedger(ledger || []);
-      const map = {};
-      (upsells || []).forEach(u => { if (!map[u.original_order_id]) map[u.original_order_id] = []; map[u.original_order_id].push(u); });
-      setUpsellsByOrder(map);
-      setSetItems(items || []);
-      const costMap = {};
-      (costs || []).forEach(c => { costMap[c.product_id] = c; });
-      setProductCosts(costMap);
-      setLoading(false);
-    })();
+    let debounceTimer = null;
+    function scheduleRefresh() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { loadFinanceData(); }, 400);
+    }
+    const channel = supabase.channel('profitability-live');
+    ['expenses', 'commission_ledger', 'upsells', 'product_set_items', 'product_costs'].forEach(table => {
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleRefresh);
+    });
+    channel.subscribe();
+    return () => { clearTimeout(debounceTimer); supabase.removeChannel(channel); };
   }, []);
 
   if (loading) return <div className="loading">Loading profitability…</div>;
