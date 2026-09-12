@@ -660,6 +660,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
   const [chosenAgent, setChosenAgent] = useState(null);
   const [assignMode, setAssignMode] = useState(null);
   const [loadedPref, setLoadedPref] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const matchingDispatch = (profiles || []).filter(p => p.role === 'dispatch' && p.active && stateValue && p.state === stateValue);
 
@@ -695,29 +696,36 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
   const willAutoAssign = canAutoAssign && !order.dispatch_id && !!chosenAgent;
 
   async function confirm() {
+    if (submitting) return; // guard against double-clicks causing duplicate assignment notifications/log entries
+    setSubmitting(true);
     const patch = {
       status: 'Confirmed', priority, preferred_time: preferredTime.trim(), state: stateValue || null,
       confirmed_at: new Date().toISOString(), confirmed_by: profile?.id,
     };
     if (willAutoAssign) patch.dispatch_id = chosenAgent.id;
-    await supabase.from('orders').update(patch).eq('id', order.id);
-    await supabase.from('original_order_snapshots').upsert({
-      order_id: order.id, customer: order.customer, phone: order.phone,
-      product_id: order.product_id, package_id: order.package_id, quantity: order.quantity,
-      unit_price: order.unit_price, total_amount: (order.quantity || 1) * Number(order.unit_price || 0),
-      staff_id: order.staff_id, created_at: order.created_at, confirmed_at: patch.confirmed_at,
-      order_source: order.created_by ? 'staff_submission' : 'admin', original_status: 'Confirmed',
-    }, { onConflict: 'order_id' });
-    await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
-    await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
-    if (willAutoAssign) {
-      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${stateValue}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
-      notifyUsers(session, { userIds: [chosenAgent.id], type: 'order_assigned', title: 'New delivery assigned', body: order.customer, orderId: order.id });
+    try {
+      const { error } = await supabase.from('orders').update(patch).eq('id', order.id);
+      if (error) { alert('Unable to confirm this order. Please try again.\n\n' + error.message); return; }
+      await supabase.from('original_order_snapshots').upsert({
+        order_id: order.id, customer: order.customer, phone: order.phone,
+        product_id: order.product_id, package_id: order.package_id, quantity: order.quantity,
+        unit_price: order.unit_price, total_amount: (order.quantity || 1) * Number(order.unit_price || 0),
+        staff_id: order.staff_id, created_at: order.created_at, confirmed_at: patch.confirmed_at,
+        order_source: order.created_by ? 'staff_submission' : 'admin', original_status: 'Confirmed',
+      }, { onConflict: 'order_id' });
+      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: order.status, to_status: 'Confirmed' });
+      await supabase.from('audit_log').insert({ actor_id: profile?.id, actor_name: profile?.full_name, action: 'Original Order Confirmed', order_id: order.id, new_value: `${order.quantity || 1} × product ${order.product_id}` });
+      if (willAutoAssign) {
+        await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'assigned', note: `Automatically sent to ${chosenAgent.full_name} (${stateValue}) on confirmation${assignMode === 'round_robin' ? ' — load-balanced pick' : ''}.` });
+        notifyUsers(session, { userIds: [chosenAgent.id], type: 'order_assigned', title: 'New delivery assigned', body: order.customer, orderId: order.id });
+      }
+      if (remark.trim()) {
+        await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
+      }
+      onConfirmed();
+    } finally {
+      setSubmitting(false);
     }
-    if (remark.trim()) {
-      await logEvent({ order_id: order.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'remark', note: remark.trim() });
-    }
-    onConfirmed();
   }
 
   return (
@@ -755,7 +763,7 @@ export function ConfirmOrderModal({ order, profile, profiles, session, onClose, 
         ) : null}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={confirm}>Confirm order</button>
+          <button className="btn primary" onClick={confirm} disabled={submitting}>{submitting ? 'Confirming…' : 'Confirm order'}</button>
         </div>
       </div>
     </div>
@@ -1143,6 +1151,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
   const [contactName, setContactName] = useState('');
   const [phone, setPhone] = useState('');
   const [channel, setChannel] = useState('whatsapp');
+  const [addingCompany, setAddingCompany] = useState(false);
   const [statePrefs, setStatePrefs] = useState({});
   const [savingState, setSavingState] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1246,10 +1255,16 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
   }
 
   async function addCompany() {
+    if (addingCompany) return; // guard against double-clicks creating duplicate companies
     if (!name.trim() || !phone.trim()) return;
-    await supabase.from('dispatch_companies').insert({ name: name.trim(), contact_name: contactName.trim(), phone: phone.trim(), channel });
-    setName(''); setContactName(''); setPhone('');
-    loadCompanies();
+    setAddingCompany(true);
+    try {
+      await supabase.from('dispatch_companies').insert({ name: name.trim(), contact_name: contactName.trim(), phone: phone.trim(), channel });
+      setName(''); setContactName(''); setPhone('');
+      loadCompanies();
+    } finally {
+      setAddingCompany(false);
+    }
   }
   async function removeCompany(id) {
     const { error } = await supabase.from('dispatch_companies').delete().eq('id', id);
@@ -1483,7 +1498,7 @@ export function SettingsPage({ settings, profiles, products, productSets, sessio
           <option value="whatsapp">WhatsApp</option>
           <option value="sms">SMS</option>
         </select>
-        <button className="btn primary" onClick={addCompany} style={{ width: '100%' }}>Add company</button>
+        <button className="btn primary" onClick={addCompany} disabled={addingCompany} style={{ width: '100%' }}>{addingCompany ? 'Adding…' : 'Add company'}</button>
       </div>
       {editingSource && (
         <OrderSourceModal
@@ -1541,20 +1556,27 @@ function SubmitOrderForm({ profile, products, refresh }) {
   const [quantity, setQuantity] = useState(1);
   const [notes, setNotes] = useState('');
   const [msg, setMsg] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
+    if (submitting) return; // guard against double-clicks creating duplicate orders
     if (!customer.trim() || !productId) { setMsg('Fill in a customer name and product.'); return; }
     const product = products.find(p => p.id === productId);
     if (!product || product.stock_quantity <= 0) { setMsg('That product is out of stock — ask admin to restock before submitting.'); return; }
-    const { data, error } = await supabase.from('orders').insert({
-      product_id: productId, customer: customer.trim(), phone: phone.trim(), address: address.trim(),
-      quantity: parseInt(quantity, 10) || 1, notes: notes.trim(), created_by: profile.id,
-    }).select().single();
-    if (error) { setMsg(error.message); return; }
-    await logEvent({ order_id: data.id, actor_id: profile.id, actor_name: profile.full_name, event_type: 'created', note: `Submitted by ${profile.full_name} (${profile.role})` });
-    setCustomer(''); setPhone(''); setAddress(''); setQuantity(1); setNotes('');
-    setMsg('Order submitted — admin will review and assign it.');
-    refresh();
+    setSubmitting(true);
+    try {
+      const { data, error } = await supabase.from('orders').insert({
+        product_id: productId, customer: customer.trim(), phone: phone.trim(), address: address.trim(),
+        quantity: parseInt(quantity, 10) || 1, notes: notes.trim(), created_by: profile.id,
+      }).select().single();
+      if (error) { setMsg(error.message); return; }
+      await logEvent({ order_id: data.id, actor_id: profile.id, actor_name: profile.full_name, event_type: 'created', note: `Submitted by ${profile.full_name} (${profile.role})` });
+      setCustomer(''); setPhone(''); setAddress(''); setQuantity(1); setNotes('');
+      setMsg('Order submitted — admin will review and assign it.');
+      refresh();
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   if (products.length === 0) return <div className="empty">No products have been made available to you yet — ask your admin.</div>;
@@ -1575,7 +1597,7 @@ function SubmitOrderForm({ profile, products, refresh }) {
       <textarea value={address} onChange={e => setAddress(e.target.value)} style={{ width: '100%', marginBottom: '10px', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
       <label className="field-label">Notes</label>
       <textarea value={notes} onChange={e => setNotes(e.target.value)} style={{ width: '100%', marginBottom: '12px', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
-      <button className="btn primary" onClick={submit} style={{ width: '100%' }}>Submit order</button>
+      <button className="btn primary" onClick={submit} disabled={submitting} style={{ width: '100%' }}>{submitting ? 'Submitting…' : 'Submit order'}</button>
       {msg && <p style={{ fontSize: '12px', color: '#4B5566', marginTop: '10px' }}>{msg}</p>}
     </div>
   );
@@ -1697,6 +1719,7 @@ export function ProductPackagesModal({ product, products, onClose }) {
   const [externalRef, setExternalRef] = useState('');
   const [giftProductId, setGiftProductId] = useState('');
   const [giftQuantity, setGiftQuantity] = useState(1);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => { load(); }, []);
   async function load() {
@@ -1706,16 +1729,22 @@ export function ProductPackagesModal({ product, products, onClose }) {
   }
 
   async function addPackage() {
+    if (adding) return; // guard against double-clicks creating duplicate packages
     if (!name.trim()) return;
-    await supabase.from('product_packages').insert({
-      product_id: product.id, name: name.trim(),
-      price: price === '' ? null : parseFloat(price),
-      external_ref: externalRef.trim() || null,
-      gift_product_id: giftProductId || null,
-      gift_quantity: giftProductId ? (parseInt(giftQuantity, 10) || 0) : 0,
-    });
-    setName(''); setPrice(''); setExternalRef(''); setGiftProductId(''); setGiftQuantity(1);
-    load();
+    setAdding(true);
+    try {
+      await supabase.from('product_packages').insert({
+        product_id: product.id, name: name.trim(),
+        price: price === '' ? null : parseFloat(price),
+        external_ref: externalRef.trim() || null,
+        gift_product_id: giftProductId || null,
+        gift_quantity: giftProductId ? (parseInt(giftQuantity, 10) || 0) : 0,
+      });
+      setName(''); setPrice(''); setExternalRef(''); setGiftProductId(''); setGiftQuantity(1);
+      load();
+    } finally {
+      setAdding(false);
+    }
   }
   async function removePackage(id) {
     await supabase.from('product_packages').delete().eq('id', id);
@@ -1766,7 +1795,7 @@ export function ProductPackagesModal({ product, products, onClose }) {
         )}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Close</button>
-          <button className="btn primary" onClick={addPackage}>Add package</button>
+          <button className="btn primary" onClick={addPackage} disabled={adding}>{adding ? 'Adding…' : 'Add package'}</button>
         </div>
       </div>
     </div>
@@ -2868,6 +2897,7 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
   const [effectiveStart, setEffectiveStart] = useState(rule.effective_start || new Date().toISOString().slice(0, 10));
   const [effectiveEnd, setEffectiveEnd] = useState(rule.effective_end || '');
   const [eligibleStaff, setEligibleStaff] = useState(rule.eligible_staff || []);
+  const [saving, setSaving] = useState(false);
 
   const originalPackages = originalProductId ? packages.filter(p => p.product_id === originalProductId) : [];
   const upsellPackages = upsellProductId ? packages.filter(p => p.product_id === upsellProductId) : [];
@@ -2875,20 +2905,26 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
   function toggleStaff(id) { setEligibleStaff(eligibleStaff.includes(id) ? eligibleStaff.filter(x => x !== id) : [...eligibleStaff, id]); }
 
   async function save() {
-    const payload = {
-      original_product_id: originalProductId || null, original_package_id: originalPackageId || null,
-      upsell_product_id: upsellProductId || null, upsell_package_id: upsellPackageId || null,
-      commission_type: commissionType, commission_value: parseFloat(commissionValue) || 0,
-      active, effective_start: effectiveStart, effective_end: effectiveEnd || null,
-      eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
-      auto_approve: autoApprove,
-    };
-    if (isNew) {
-      await supabase.from('upsell_commission_rules').insert(payload);
-    } else {
-      await supabase.from('upsell_commission_rules').update(payload).eq('id', rule.id);
+    if (saving) return; // guard against double-clicks creating duplicate rules
+    setSaving(true);
+    try {
+      const payload = {
+        original_product_id: originalProductId || null, original_package_id: originalPackageId || null,
+        upsell_product_id: upsellProductId || null, upsell_package_id: upsellPackageId || null,
+        commission_type: commissionType, commission_value: parseFloat(commissionValue) || 0,
+        active, effective_start: effectiveStart, effective_end: effectiveEnd || null,
+        eligible_staff: eligibleStaff.length > 0 ? eligibleStaff : null,
+        auto_approve: autoApprove,
+      };
+      if (isNew) {
+        await supabase.from('upsell_commission_rules').insert(payload);
+      } else {
+        await supabase.from('upsell_commission_rules').update(payload).eq('id', rule.id);
+      }
+      onClose();
+    } finally {
+      setSaving(false);
     }
-    onClose();
   }
 
   return (
@@ -2961,7 +2997,7 @@ function UpsellRuleModal({ rule, products, packages, profiles, onClose }) {
         </p>
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={save}>Save rule</button>
+          <button className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save rule'}</button>
         </div>
       </div>
     </div>
@@ -3475,6 +3511,7 @@ function ProductSetModal({ set, products, onClose }) {
   const [items, setItems] = useState({}); // productId -> quantity_per_set
   const [loadingItems, setLoadingItems] = useState(!isNew);
   const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (isNew) return;
@@ -3505,27 +3542,33 @@ function ProductSetModal({ set, products, onClose }) {
   }, 0);
 
   async function save() {
+    if (saving) return; // guard against double-clicks creating duplicate sets
     const productIds = Object.keys(items);
     if (!name.trim() || productIds.length < 2) {
       alert('Give the set a name and select at least 2 different products.');
       return;
     }
     setSaveError('');
-    const payload = { name: name.trim(), sku: sku.trim() || null, price_mode: priceMode, flat_price: priceMode === 'flat' ? (parseFloat(flatPrice) || 0) : null };
-    let setId = set.id;
-    if (isNew) {
-      const { data, error } = await supabase.from('product_sets').insert(payload).select().single();
-      if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
-      setId = data.id;
-    } else {
-      const { error } = await supabase.from('product_sets').update(payload).eq('id', set.id);
-      if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
-      await supabase.from('product_set_items').delete().eq('set_id', set.id);
+    setSaving(true);
+    try {
+      const payload = { name: name.trim(), sku: sku.trim() || null, price_mode: priceMode, flat_price: priceMode === 'flat' ? (parseFloat(flatPrice) || 0) : null };
+      let setId = set.id;
+      if (isNew) {
+        const { data, error } = await supabase.from('product_sets').insert(payload).select().single();
+        if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
+        setId = data.id;
+      } else {
+        const { error } = await supabase.from('product_sets').update(payload).eq('id', set.id);
+        if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
+        await supabase.from('product_set_items').delete().eq('set_id', set.id);
+      }
+      await supabase.from('product_set_items').insert(
+        productIds.map(pid => ({ set_id: setId, product_id: pid, quantity_per_set: items[pid] }))
+      );
+      onClose();
+    } finally {
+      setSaving(false);
     }
-    await supabase.from('product_set_items').insert(
-      productIds.map(pid => ({ set_id: setId, product_id: pid, quantity_per_set: items[pid] }))
-    );
-    onClose();
   }
 
   return (
@@ -3575,7 +3618,7 @@ function ProductSetModal({ set, products, onClose }) {
         {saveError && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '6px' }}>{saveError}</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={save}>Save set</button>
+          <button className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save set'}</button>
         </div>
       </div>
     </div>

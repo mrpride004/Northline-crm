@@ -588,6 +588,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
   const [state, setState] = useState(order ? order.state || '' : '');
   const [dispatchId, setDispatchId] = useState(order ? order.dispatch_id || '' : '');
   const [stockError, setStockError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const productPackages = (packages || []).filter(p => p.product_id === productId);
   const selectedPackage = productPackages.find(p => p.id === packageId);
   const giftProduct = selectedPackage ? products.find(p => p.id === selectedPackage.gift_product_id) : null;
@@ -602,22 +603,28 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
     if (pkg && pkg.price != null) setUnitPrice(pkg.price);
   }
 
-  function save() {
+  async function save() {
+    if (submitting) return; // guard against double-clicks / double-taps creating duplicate orders
     if (!customer.trim()) return;
     if (orderType === 'set') {
       if (!setId) return;
-      onSave({
-        set_id: setId, product_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
-        quantity: parseInt(quantity, 10) || 1,
-        unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
-        delivery_fee: parseFloat(deliveryFee) || 0,
-        payment_status: paymentStatus,
-        reschedule_date: rescheduleDate || null,
-        priority, preferred_time: preferredTime.trim(),
-        package_id: null, gift_quantity: 0,
-        state: state || null,
-        dispatch_id: dispatchId || null,
-      });
+      setSubmitting(true);
+      try {
+        await onSave({
+          set_id: setId, product_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
+          quantity: parseInt(quantity, 10) || 1,
+          unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
+          delivery_fee: parseFloat(deliveryFee) || 0,
+          payment_status: paymentStatus,
+          reschedule_date: rescheduleDate || null,
+          priority, preferred_time: preferredTime.trim(),
+          package_id: null, gift_quantity: 0,
+          state: state || null,
+          dispatch_id: dispatchId || null,
+        });
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
     if (!productId) return;
@@ -628,19 +635,24 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         return;
       }
     }
-    onSave({
-      product_id: productId, set_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
-      quantity: parseInt(quantity, 10) || 1,
-      unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
-      delivery_fee: parseFloat(deliveryFee) || 0,
-      payment_status: paymentStatus,
-      reschedule_date: rescheduleDate || null,
-      priority, preferred_time: preferredTime.trim(),
-      package_id: giftProduct ? (packageId || null) : null,
-      gift_quantity: giftProduct ? (parseInt(giftQuantity, 10) || 0) : 0,
-      state: state || null,
-      dispatch_id: dispatchId || null,
-    });
+    setSubmitting(true);
+    try {
+      await onSave({
+        product_id: productId, set_id: null, customer: customer.trim(), phone: phone.trim(), phone2: phone2.trim() || null, address: address.trim(), notes: notes.trim(),
+        quantity: parseInt(quantity, 10) || 1,
+        unit_price: unitPrice === '' ? null : parseFloat(unitPrice),
+        delivery_fee: parseFloat(deliveryFee) || 0,
+        payment_status: paymentStatus,
+        reschedule_date: rescheduleDate || null,
+        priority, preferred_time: preferredTime.trim(),
+        package_id: giftProduct ? (packageId || null) : null,
+        gift_quantity: giftProduct ? (parseInt(giftQuantity, 10) || 0) : 0,
+        state: state || null,
+        dispatch_id: dispatchId || null,
+      });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -770,7 +782,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         {stockError && <p style={{ fontSize: '12px', color: '#B0483F', marginTop: '10px' }}>{stockError}</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={save}>{order ? 'Save changes' : 'Create order'}</button>
+          <button className="btn primary" onClick={save} disabled={submitting}>{submitting ? 'Saving…' : (order ? 'Save changes' : 'Create order')}</button>
         </div>
       </div>
     </div>
@@ -843,6 +855,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   const [dateFilter, setDateFilter] = useState('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const savingOrderRef = useRef(false); // belt-and-braces guard: even if the modal's own submit-lock is bypassed, this stops a second insert from ever reaching the database
 
   const byProduct = activeProduct === 'all' ? orders : orders.filter(o => o.product_id === activeProduct);
   const byState = activeState === 'all' ? byProduct : byProduct.filter(o => o.state === activeState);
@@ -928,12 +941,24 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function createOrder(fields) {
-    if (myRole === 'staff' && !fields.staff_id) {
-      fields = { ...fields, staff_id: myId };
-    }
-    const { data, error } = await supabase.from('orders').insert(fields).select().single();
-    setShowNew(false);
-    if (!error && data) {
+    // Guard against duplicate order rows: a rapid double-click/double-tap on
+    // "Create order" (e.g. on a slow connection, before the modal has had a
+    // chance to close) used to fire this twice and insert the same order
+    // more than once. The modal itself now disables its button while saving,
+    // but this ref is the authoritative backstop that actually prevents a
+    // second insert from ever reaching the database.
+    if (savingOrderRef.current) return;
+    savingOrderRef.current = true;
+    try {
+      if (myRole === 'staff' && !fields.staff_id) {
+        fields = { ...fields, staff_id: myId };
+      }
+      const { data, error } = await supabase.from('orders').insert(fields).select().single();
+      if (error) {
+        alert('Unable to create this order. Please try again.\n\n' + error.message);
+        return;
+      }
+      setShowNew(false);
       await logEvent({ order_id: data.id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'created', note: 'Order created' });
       if (data.phone && (settings?.sms_auto_confirm === 'true' || settings?.whatsapp_auto_confirm === 'true')) {
         const itemLabel = data.set_id ? setName(data.set_id) : data.package_id ? pkgName(data.package_id) : prodName(data.product_id);
@@ -950,8 +975,10 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         userIds: notifyIds, type: 'new_order', title: 'New order', body: `${data.customer}${data.state ? ' · ' + data.state : ''}`,
         orderId: data.id,
       });
+    } finally {
+      savingOrderRef.current = false;
+      refresh();
     }
-    refresh();
   }
 
   async function adjustStockForOrder(o, direction) {
@@ -1000,7 +1027,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         await adjustStockForOrder(current, 1);
       }
       const { error: updateError } = await supabase.from('orders').update(patch).eq('id', id);
-      if (updateError) { alert('Unable to update this order. Please try again.\n\n' + updateError.message); return; }
+      if (updateError) { alert('Unable to update this order. Please try again.\n\n' + updateError.message); return false; }
       if (patch.status && current && patch.status !== current.status) {
         await logEvent({ order_id: id, actor_id: profile?.id, actor_name: profile?.full_name, event_type: 'status_change', from_status: current.status, to_status: patch.status });
         if (patch.status === 'Cancelled' && current.status === 'Delivered') {
@@ -1027,9 +1054,11 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       if (patch.status === 'Cancelled') {
         await supabase.rpc('cancel_upsells_for_order', { p_order_id: id });
       }
+      return true;
     } catch (e) {
       console.error('[updateOrder] unexpected error:', e);
       alert('Something went wrong updating this order. Please try again — if it keeps happening, let admin know.\n\n' + (e?.message || e));
+      return false;
     } finally {
       refresh();
     }
@@ -1405,7 +1434,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       )}
 
       {showNew && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} onClose={() => setShowNew(false)} onSave={createOrder} />}
-      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={(fields) => { updateOrder(editing.id, fields); setEditing(null); }} />}
+      {editing && <OrderModal products={products} packages={packages} profiles={isAdmin ? profiles : null} productSets={productSets} isAdmin={isAdmin} order={editing} onRequestCorrection={(o) => { setEditing(null); setRequestingCorrection(o); }} onClose={() => setEditing(null)} onSave={async (fields) => { const ok = await updateOrder(editing.id, fields); if (ok) setEditing(null); }} />}
       {requestingCorrection && <RequestCorrectionModal order={requestingCorrection} profile={profile} onClose={() => setRequestingCorrection(null)} onSubmitted={() => { setRequestingCorrection(null); refresh(); }} />}
       {addingUpsellTo && <AddUpsellModal order={addingUpsellTo} products={products} packages={packages} productSets={productSets} currentUpsells={upsellsByOrder && upsellsByOrder[addingUpsellTo.id]} profile={profile} profiles={profiles} session={session} onClose={() => setAddingUpsellTo(null)} onCreated={() => { setAddingUpsellTo(null); refresh(); showToast('Package updated successfully'); }} />}
       {confirmDeleteOrder && (
@@ -1856,16 +1885,23 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
   const [priceEdits, setPriceEdits] = useState({});
   const [skuEdits, setSkuEdits] = useState({});
   const [addError, setAddError] = useState('');
+  const [adding, setAdding] = useState(false);
   async function add() {
+    if (adding) return; // guard against double-clicks creating duplicate products
     if (!name.trim()) return;
     setAddError('');
-    const { error } = await supabase.from('products').insert({ name: name.trim(), sku: sku.trim() || null });
-    if (error) {
-      setAddError(error.code === '23505' ? `That code is already used by another product — pick a different one.` : error.message);
-      return;
+    setAdding(true);
+    try {
+      const { error } = await supabase.from('products').insert({ name: name.trim(), sku: sku.trim() || null });
+      if (error) {
+        setAddError(error.code === '23505' ? `That code is already used by another product — pick a different one.` : error.message);
+        return;
+      }
+      setName(''); setSku('');
+      refresh();
+    } finally {
+      setAdding(false);
     }
-    setName(''); setSku('');
-    refresh();
   }
   async function remove(id) {
     const { error } = await supabase.from('products').delete().eq('id', id);
@@ -1940,7 +1976,7 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
       <div className="row2" style={{ maxWidth: '560px' }}>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="New product name" />
         <input value={sku} onChange={e => setSku(e.target.value)} placeholder="Code / SKU (optional)" style={{ fontFamily: 'monospace', maxWidth: '160px' }} />
-        <button className="btn primary" onClick={add} style={{ flex: '0 0 auto' }}>Add product</button>
+        <button className="btn primary" onClick={add} disabled={adding} style={{ flex: '0 0 auto' }}>{adding ? 'Adding…' : 'Add product'}</button>
       </div>
       {addError && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '6px' }}>{addError}</p>}
       </>
