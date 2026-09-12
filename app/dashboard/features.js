@@ -949,6 +949,25 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
   });
   const stateRows = Object.entries(byState).sort((a, b) => b[1].sent - a[1].sent);
 
+  const salesByState = {};
+  scoped.forEach(o => {
+    const st = o.state || 'Unknown';
+    if (!salesByState[st]) salesByState[st] = { orders: 0, delivered: 0, revenue: 0 };
+    salesByState[st].orders += 1;
+    if (o.status === 'Delivered') {
+      salesByState[st].delivered += 1;
+      salesByState[st].revenue += orderTotal(o, upsellsByOrder[o.id]);
+    }
+  });
+  const salesByStateRows = Object.entries(salesByState).map(([state, d]) => ({
+    state,
+    orders: d.orders,
+    delivered: d.delivered,
+    revenue: d.revenue,
+    conversion: d.orders ? (d.delivered / d.orders) * 100 : 0,
+    avgOrderValue: d.delivered ? d.revenue / d.delivered : 0,
+  })).sort((a, b) => b.revenue - a.revenue);
+
   const scopedAdSpend = adExpenses.filter(expenseInRange);
   const spendByChannel = {};
   scopedAdSpend.forEach(e => {
@@ -1224,7 +1243,26 @@ export function ReportsPage({ orders, profiles, products, session, latestRemarks
 
       {section === 'state' && (
         <>
-          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '0 0 10px' }}>By state</h3>
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '0 0 4px' }}>Sales by state</h3>
+          <p style={{ fontSize: '11.5px', color: '#8A93A0', marginBottom: '10px' }}>Grouped by the customer's state on the order, for this range.</p>
+          <table style={{ marginBottom: '24px' }}>
+            <thead><tr><th>State</th><th>Orders</th><th>Delivered</th><th>Conversion</th><th>Revenue</th><th>Avg. order value</th></tr></thead>
+            <tbody>
+              {salesByStateRows.length === 0 && <tr><td colSpan="6" className="empty">No orders in this range yet.</td></tr>}
+              {salesByStateRows.map((s, i) => (
+                <tr key={s.state}>
+                  <td>{i === 0 && s.revenue > 0 && '🏆 '}{s.state}</td>
+                  <td>{s.orders}</td>
+                  <td>{s.delivered}</td>
+                  <td>{s.conversion.toFixed(0)}%</td>
+                  <td>₦{s.revenue.toLocaleString()}</td>
+                  <td>{s.avgOrderValue > 0 ? '₦' + s.avgOrderValue.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', margin: '0 0 10px' }}>Dispatch coverage by state</h3>
           <table>
             <thead><tr><th>State</th><th>Agents</th><th>Orders sent</th><th>Delivered</th></tr></thead>
             <tbody>
