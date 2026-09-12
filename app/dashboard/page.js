@@ -648,7 +648,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
               <option value="">— Select a set —</option>
               {productSets.map(s => {
                 const { inStock, text } = setStockLabel(s, products);
-                return <option key={s.id} value={s.id} disabled={!inStock}>{s.name}{text}</option>;
+                return <option key={s.id} value={s.id} disabled={!inStock}>{s.name}{s.sku ? ` [${s.sku}]` : ''}{text}</option>;
               })}
             </select>
             {setId && (() => {
@@ -665,7 +665,7 @@ function OrderModal({ products, packages, profiles, productSets, order, isAdmin,
         <>
         <label>Product</label>
         <select value={productId} onChange={e => { setProductId(e.target.value); setPackageId(''); setGiftQuantity(0); }} disabled={isLocked}>
-          {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name} ({p.stock_quantity ?? 0} in stock){(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
+          {products.map(p => <option key={p.id} value={p.id} disabled={!p.stock_quantity || p.stock_quantity <= 0}>{p.name}{p.sku ? ` [${p.sku}]` : ''} ({p.stock_quantity ?? 0} in stock){(!p.stock_quantity || p.stock_quantity <= 0) ? ' — OUT OF STOCK' : ''}</option>)}
         </select>
         {productPackages.length > 0 && (
           <>
@@ -1112,11 +1112,20 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         </div>
       )}
 
-      {products.length > 0 &&
+      {products.length > 0 && (products.length > 8 ? (
+        <div style={{ margin: '0 0 16px', maxWidth: '320px' }}>
+          <label className="field-label" style={{ marginTop: 0 }}>Filter by product</label>
+          <select value={activeProduct} onChange={e => setActiveProduct(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+            <option value="all">All products ({orders.length})</option>
+            {products.map(p => <option key={p.id} value={p.id}>{p.name}{p.sku ? ` [${p.sku}]` : ''} ({orders.filter(o => o.product_id === p.id).length})</option>)}
+          </select>
+        </div>
+      ) : (
         <div className="product-tabs">
           <span className={'ptab' + (activeProduct === 'all' ? ' active' : '')} onClick={() => setActiveProduct('all')}>All products</span>
-          {products.map(p => <span key={p.id} className={'ptab' + (activeProduct === p.id ? ' active' : '')} onClick={() => setActiveProduct(p.id)}>{p.name}</span>)}
-        </div>}
+          {products.map(p => <span key={p.id} className={'ptab' + (activeProduct === p.id ? ' active' : '')} onClick={() => setActiveProduct(p.id)}>{p.name}{p.sku ? ` [${p.sku}]` : ''}</span>)}
+        </div>
+      ))}
 
       {filtered.length === 0 ? (
         <div className="empty">No orders here yet.</div>
@@ -1815,14 +1824,22 @@ function DispatchPage({ orders, products, packages, productSets, latestRemarks, 
 
 function ProductsPage({ products, orders, packages, profiles, refresh }) {
   const [name, setName] = useState('');
+  const [sku, setSku] = useState('');
   const [managingPackages, setManagingPackages] = useState(null);
   const [managingCommission, setManagingCommission] = useState(null);
   const [tab, setTab] = useState('products');
   const [priceEdits, setPriceEdits] = useState({});
+  const [skuEdits, setSkuEdits] = useState({});
+  const [addError, setAddError] = useState('');
   async function add() {
     if (!name.trim()) return;
-    await supabase.from('products').insert({ name: name.trim() });
-    setName('');
+    setAddError('');
+    const { error } = await supabase.from('products').insert({ name: name.trim(), sku: sku.trim() || null });
+    if (error) {
+      setAddError(error.code === '23505' ? `That code is already used by another product — pick a different one.` : error.message);
+      return;
+    }
+    setName(''); setSku('');
     refresh();
   }
   async function remove(id) {
@@ -1840,9 +1857,19 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
     setPriceEdits({ ...priceEdits, [p.id]: '' });
     refresh();
   }
+  async function saveSku(p) {
+    const val = (skuEdits[p.id] ?? '').trim();
+    const { error } = await supabase.from('products').update({ sku: val || null }).eq('id', p.id);
+    if (error) {
+      alert(error.code === '23505' ? 'That code is already used by another product — pick a different one.' : error.message);
+      return;
+    }
+    setSkuEdits({ ...skuEdits, [p.id]: undefined });
+    refresh();
+  }
   return (
     <div>
-      <div className="topbar" style={{ borderLeft: '4px solid #4A7FBF', paddingLeft: '14px' }}><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Add packages to bundle a free gift with a product, or group several products together as a Set.</p></div></div>
+      <div className="topbar" style={{ borderLeft: '4px solid #4A7FBF', paddingLeft: '14px' }}><div><h1 className="page-title">Products</h1><p className="page-sub">Each product gets its own order queue and tab. Give each one a short unique code so it stays easy to tell apart as you add more — staff, dispatch, and the Profitability report all use it. Add packages to bundle a free gift with a product, or group several products together as a Set.</p></div></div>
       <div className="product-tabs">
         <span className={'ptab' + (tab === 'products' ? ' active' : '')} onClick={() => setTab('products')}>Products</span>
         <span className={'ptab' + (tab === 'sets' ? ' active' : '')} onClick={() => setTab('sets')}>Sets</span>
@@ -1857,9 +1884,18 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
           return (
             <div key={p.id} className="list-manage-row">
               <span>
-                {p.name} <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}{p.default_price ? ` · default ₦${Number(p.default_price).toLocaleString()}` : ''}</span>
+                {p.name}{' '}
+                {p.sku && <span className="pill" style={{ background: '#EEF2F8', color: '#4A7FBF', border: '1px solid #D6E0EE', fontFamily: 'monospace', fontSize: '11px' }}>{p.sku}</span>}
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>· {orders.filter(o => o.product_id === p.id).length} orders{pkgCount > 0 ? ` · ${pkgCount} package${pkgCount !== 1 ? 's' : ''}` : ''}{p.default_price ? ` · default ₦${Number(p.default_price).toLocaleString()}` : ''}</span>
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <input
+                  type="text" placeholder="code / SKU"
+                  value={skuEdits[p.id] ?? p.sku ?? ''}
+                  onChange={e => setSkuEdits({ ...skuEdits, [p.id]: e.target.value })}
+                  style={{ width: '110px', fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px', fontFamily: 'monospace' }}
+                />
+                <button className="link-btn" onClick={() => saveSku(p)}>Save code</button>
                 <input
                   type="number" min="0" placeholder="default price"
                   value={priceEdits[p.id] ?? ''}
@@ -1876,10 +1912,12 @@ function ProductsPage({ products, orders, packages, profiles, refresh }) {
         })}
         {products.length === 0 && <div className="list-manage-row" style={{ color: '#8A93A0' }}>No products yet.</div>}
       </div>
-      <div className="row2" style={{ maxWidth: '420px' }}>
+      <div className="row2" style={{ maxWidth: '560px' }}>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="New product name" />
+        <input value={sku} onChange={e => setSku(e.target.value)} placeholder="Code / SKU (optional)" style={{ fontFamily: 'monospace', maxWidth: '160px' }} />
         <button className="btn primary" onClick={add} style={{ flex: '0 0 auto' }}>Add product</button>
       </div>
+      {addError && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '6px' }}>{addError}</p>}
       </>
       )}
       {managingPackages && <ProductPackagesModal product={managingPackages} products={products} onClose={() => { setManagingPackages(null); refresh(); }} />}

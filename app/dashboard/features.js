@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
 const STATUSES = ['New', 'Confirmed', 'Preparing', 'Dispatched', 'Delivered', 'Unreachable', 'Rescheduled', 'Cancelled'];
@@ -3431,7 +3431,8 @@ export function ProductSetsPage({ products, profiles, refresh }) {
             <div key={s.id} className="list-manage-row">
               <span>
                 <strong>{s.name}</strong>{' '}
-                <span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
+                {s.sku && <span className="pill" style={{ background: '#EEF2F8', color: '#4A7FBF', border: '1px solid #D6E0EE', fontFamily: 'monospace', fontSize: '11px' }}>{s.sku}</span>}
+                {' '}<span style={{ color: '#8A93A0', fontSize: '11.5px' }}>
                   · {s.items.map(i => `${i.quantity_per_set}× ${prodName(i.product_id)}`).join(' + ')}
                   · {s.price_mode === 'flat' ? `₦${Number(s.flat_price || 0).toLocaleString()} flat` : 'Sum of component prices'}
                 </span>
@@ -3455,10 +3456,12 @@ export function ProductSetsPage({ products, profiles, refresh }) {
 function ProductSetModal({ set, products, onClose }) {
   const isNew = !set.id;
   const [name, setName] = useState(set.name || '');
+  const [sku, setSku] = useState(set.sku || '');
   const [priceMode, setPriceMode] = useState(set.price_mode || 'flat');
   const [flatPrice, setFlatPrice] = useState(set.flat_price || '');
   const [items, setItems] = useState({}); // productId -> quantity_per_set
   const [loadingItems, setLoadingItems] = useState(!isNew);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     if (isNew) return;
@@ -3494,14 +3497,16 @@ function ProductSetModal({ set, products, onClose }) {
       alert('Give the set a name and select at least 2 different products.');
       return;
     }
-    const payload = { name: name.trim(), price_mode: priceMode, flat_price: priceMode === 'flat' ? (parseFloat(flatPrice) || 0) : null };
+    setSaveError('');
+    const payload = { name: name.trim(), sku: sku.trim() || null, price_mode: priceMode, flat_price: priceMode === 'flat' ? (parseFloat(flatPrice) || 0) : null };
     let setId = set.id;
     if (isNew) {
       const { data, error } = await supabase.from('product_sets').insert(payload).select().single();
-      if (error) { alert(error.message); return; }
+      if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
       setId = data.id;
     } else {
-      await supabase.from('product_sets').update(payload).eq('id', set.id);
+      const { error } = await supabase.from('product_sets').update(payload).eq('id', set.id);
+      if (error) { setSaveError(error.code === '23505' ? 'That code is already used by another product/set — pick a different one.' : error.message); return; }
       await supabase.from('product_set_items').delete().eq('set_id', set.id);
     }
     await supabase.from('product_set_items').insert(
@@ -3516,6 +3521,8 @@ function ProductSetModal({ set, products, onClose }) {
         <h3>{isNew ? 'New' : 'Edit'} product set</h3>
         <label style={{ marginTop: 0 }}>Set name</label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Complete Care Bundle" />
+        <label>Code / SKU (optional, unique)</label>
+        <input value={sku} onChange={e => setSku(e.target.value)} placeholder="e.g. SET-CARE-BUNDLE" style={{ fontFamily: 'monospace' }} />
 
         <label>Which products are in this set?</label>
         {loadingItems ? <p style={{ fontSize: '12px', color: '#8A93A0' }}>Loading…</p> : (
@@ -3552,6 +3559,7 @@ function ProductSetModal({ set, products, onClose }) {
             Calculated from products' default prices: ₦{sumPrice.toLocaleString()}. Set a default price on each product (in Products) for this to work — components without one count as ₦0.
           </p>
         )}
+        {saveError && <p style={{ fontSize: '11.5px', color: '#B0483F', marginTop: '6px' }}>{saveError}</p>}
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={save}>Save set</button>
@@ -4285,6 +4293,9 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
   const [setItems, setSetItems] = useState([]);
   const [productCosts, setProductCosts] = useState({});
   const [loading, setLoading] = useState(true);
+  const [focusedKey, setFocusedKey] = useState(null);
+  const [expandedKeys, setExpandedKeys] = useState({});
+  const [filterText, setFilterText] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -4410,6 +4421,52 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
     };
   }
 
+  // Rolls per-line results (which count each PACKAGE as its own line) up to
+  // one row per real, sellable entity — a product (with every one of its
+  // packages, plus any bare/no-package sales, combined into it) or a set.
+  // This is what keeps the report readable as more packages get added to a
+  // product: the row count only grows when a NEW product/set is added, not
+  // every time a variant is. Seeded from the full product/set lists so a
+  // brand-new item with zero orders still shows up (at zero) rather than
+  // only appearing once it has history.
+  function buildGroups(lineArray, expensesList) {
+    const groups = {};
+    products.forEach(p => {
+      groups['product:' + p.id] = { key: 'product:' + p.id, kind: 'product', id: p.id, name: p.name, sku: p.sku || '', orders: 0, deliveredPaid: 0, revenue: 0, cogs: 0, packaging: 0, delivery: 0, commission: 0, gift: 0, children: [] };
+    });
+    (productSets || []).forEach(s => {
+      groups['set:' + s.id] = { key: 'set:' + s.id, kind: 'set', id: s.id, name: s.name, sku: s.sku || '', orders: 0, deliveredPaid: 0, revenue: 0, cogs: 0, packaging: 0, delivery: 0, commission: 0, gift: 0, children: [] };
+    });
+    lineArray.forEach(L => {
+      const gid = L.type === 'set' ? L.id : (L.tagProductId || L.id);
+      const key = (L.type === 'set' ? 'set:' : 'product:') + gid;
+      if (!groups[key]) {
+        // The product/set behind this line was since deleted — still surface
+        // its numbers rather than silently dropping them.
+        groups[key] = { key, kind: L.type === 'set' ? 'set' : 'product', id: gid, name: L.name, sku: '', orders: 0, deliveredPaid: 0, revenue: 0, cogs: 0, packaging: 0, delivery: 0, commission: 0, gift: 0, children: [] };
+      }
+      const G = groups[key];
+      G.orders += L.orders;
+      G.deliveredPaid += L.deliveredPaid;
+      G.revenue += L.revenue;
+      G.cogs += L.cogs;
+      G.packaging += L.packaging;
+      G.delivery += L.delivery;
+      G.commission += L.commission;
+      G.gift += L.gift;
+      G.children.push(L);
+    });
+    return Object.values(groups).map(G => {
+      // Waybill/ad spend computed ONCE per group, straight from the expense
+      // ledger — never by summing children's tagged amounts, which would
+      // multiply a product's freight/ad cost by however many packages it has.
+      const waybill = expensesList.filter(e => e.category === 'waybill' && ((G.kind === 'product' && e.product_id === G.id) || (G.kind === 'set' && e.set_id === G.id))).reduce((s, e) => s + Number(e.amount || 0), 0);
+      const adSpend = expensesList.filter(e => e.category === 'ad_spend' && ((G.kind === 'product' && e.product_id === G.id) || (G.kind === 'set' && e.set_id === G.id))).reduce((s, e) => s + Number(e.amount || 0), 0);
+      const netProfit = G.revenue - G.cogs - G.packaging - G.delivery - G.commission - G.gift - waybill - adSpend;
+      return { ...G, waybill, adSpend, closingRate: G.orders > 0 ? G.deliveredPaid / G.orders : 0, netProfit, children: G.children.sort((a, b) => b.revenue - a.revenue) };
+    }).sort((a, b) => (b.orders > 0) - (a.orders > 0) || b.netProfit - a.netProfit || a.name.localeCompare(b.name));
+  }
+
   function inDateRange(dateStr) {
     if (!dateStr) return range === 'all';
     const d = new Date(dateStr);
@@ -4430,6 +4487,11 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
   const scopedOrders = orders.filter(o => inDateRange(o.created_at));
   const scopedExpenses = expenses.filter(e => inDateRange(e.expense_date));
   const { lines, totals } = buildStats(scopedOrders, scopedExpenses);
+  const groups = buildGroups(lines, scopedExpenses);
+  const filteredGroups = filterText.trim()
+    ? groups.filter(g => g.name.toLowerCase().includes(filterText.trim().toLowerCase()) || (g.sku || '').toLowerCase().includes(filterText.trim().toLowerCase()))
+    : groups;
+  const focusedGroup = focusedKey ? groups.find(g => g.key === focusedKey) : null;
 
   // "Best month" and "Best product" always look across the FULL history,
   // regardless of whatever range is selected above — the point is to answer
@@ -4504,33 +4566,167 @@ export function ProfitabilityPage({ products, productSets, packages, orders }) {
         <div className="stat"><div className="stat-num">{money(totals.other)}</div><div className="stat-label">Other overhead</div></div>
       </div>
 
-      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By product / set, for this range</h3>
-      {lines.length === 0 ? <div className="empty">No orders in this range yet.</div> : (
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '4px' }}>By product / set, for this range</h3>
+      <p style={{ fontSize: '12px', color: '#8A93A0', margin: '0 0 12px' }}>One row per product or set — every package and variant of a product is combined into its row. Pick one below (or click its row) for the full breakdown.</p>
+
+      <div className="row2" style={{ maxWidth: '640px', marginBottom: '14px' }}>
+        <div style={{ flex: '1 1 260px' }}>
+          <label className="field-label" style={{ marginTop: 0 }}>Jump to a product or set</label>
+          <select
+            value={focusedKey || ''}
+            onChange={e => { setFocusedKey(e.target.value || null); }}
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+          >
+            <option value="">— All products &amp; sets (overview below) —</option>
+            <optgroup label="Products">
+              {groups.filter(g => g.kind === 'product').map(g => (
+                <option key={g.key} value={g.key}>{g.name}{g.sku ? ` [${g.sku}]` : ''}{g.orders === 0 ? ' — no orders yet' : ''}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Sets">
+              {groups.filter(g => g.kind === 'set').map(g => (
+                <option key={g.key} value={g.key}>{g.name}{g.sku ? ` [${g.sku}]` : ''}{g.orders === 0 ? ' — no orders yet' : ''}</option>
+              ))}
+            </optgroup>
+          </select>
+        </div>
+        <div style={{ flex: '1 1 200px' }}>
+          <label className="field-label" style={{ marginTop: 0 }}>Search the table below</label>
+          <input
+            value={filterText} onChange={e => setFilterText(e.target.value)} placeholder="Name or code…"
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }}
+          />
+        </div>
+      </div>
+
+      {focusedGroup && (
+        <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '18px', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+            <div>
+              <span className="pill" style={{ background: focusedGroup.kind === 'set' ? '#EAF4F1' : '#EEF2F8', color: focusedGroup.kind === 'set' ? '#1F4D44' : '#4A7FBF', border: '1px solid ' + (focusedGroup.kind === 'set' ? '#C7DED7' : '#D6E0EE'), marginRight: '8px' }}>{focusedGroup.kind === 'set' ? 'Set' : 'Product'}</span>
+              <span style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '18px', fontWeight: 600 }}>{focusedGroup.name}</span>
+              {focusedGroup.sku && <span className="pill" style={{ marginLeft: '8px', background: '#F5F2EA', color: '#4B5566', border: '1px solid #DEDAD0', fontFamily: 'monospace', fontSize: '11px' }}>{focusedGroup.sku}</span>}
+            </div>
+            <button className="link-btn" onClick={() => setFocusedKey(null)}>✕ Clear — show all</button>
+          </div>
+
+          {focusedGroup.kind === 'set' && setItemsBySet[focusedGroup.id] && setItemsBySet[focusedGroup.id].length > 0 && (
+            <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-4px', marginBottom: '14px' }}>
+              Contains: {setItemsBySet[focusedGroup.id].map(i => `${i.quantity_per_set}× ${(products.find(p => p.id === i.product_id) || {}).name || '—'}`).join(' + ')}
+            </p>
+          )}
+
+          {focusedGroup.orders === 0 ? (
+            <div className="empty">No orders for this {focusedGroup.kind} in this range yet.</div>
+          ) : (
+            <>
+              <div className="stats" style={{ marginBottom: '10px' }}>
+                <div className="stat"><div className="stat-num">{focusedGroup.orders}</div><div className="stat-label">Orders</div></div>
+                <div className="stat"><div className="stat-num">{focusedGroup.deliveredPaid}</div><div className="stat-label">Delivered &amp; paid</div></div>
+                <div className="stat"><div className="stat-num">{(focusedGroup.closingRate * 100).toFixed(0)}%</div><div className="stat-label">Closing rate</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.revenue)}</div><div className="stat-label">Revenue</div></div>
+                <div className="stat"><div className="stat-num" style={{ color: focusedGroup.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(focusedGroup.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
+              </div>
+              <div className="stats" style={{ marginBottom: '16px' }}>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.cogs)}</div><div className="stat-label">Cost of goods</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.packaging)}</div><div className="stat-label">Packaging</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.delivery)}</div><div className="stat-label">Delivery to customer</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.commission)}</div><div className="stat-label">Commission</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.gift)}</div><div className="stat-label">Free gifts</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.waybill)}</div><div className="stat-label">Waybill / freight-in</div></div>
+                <div className="stat"><div className="stat-num">{money(focusedGroup.adSpend)}</div><div className="stat-label">Ad spend</div></div>
+              </div>
+
+              {focusedGroup.kind === 'product' && focusedGroup.children.length > 0 && (
+                <>
+                  <h4 style={{ fontSize: '13px', margin: '0 0 8px', color: '#4B5566' }}>Breakdown by package</h4>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table>
+                      <thead><tr><th>Package</th><th>Orders</th><th>Closing rate</th><th>Revenue</th><th>Net profit</th></tr></thead>
+                      <tbody>
+                        {focusedGroup.children.map(c => (
+                          <tr key={c.key}>
+                            <td>{c.type === 'package' ? c.name.replace(/^.*?—\s*/, '') : 'No package (plain product)'}</td>
+                            <td>{c.orders}</td>
+                            <td>{(c.closingRate * 100).toFixed(0)}%</td>
+                            <td>{money(c.revenue)}</td>
+                            <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(c.netProfit)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {filteredGroups.length === 0 ? <div className="empty">No products or sets match "{filterText}".</div> : (
         <div style={{ overflowX: 'auto' }}>
           <table>
-            <thead><tr><th>Product / Set</th><th>Orders</th><th>Closing rate</th><th>Revenue</th><th>COGS</th><th>Packaging</th><th>Delivery</th><th>Commission</th><th>Gift</th><th>Waybill</th><th>Ad spend</th><th>Net profit</th></tr></thead>
+            <thead><tr><th></th><th>Product / Set</th><th>Orders</th><th>Closing rate</th><th>Revenue</th><th>COGS</th><th>Packaging</th><th>Delivery</th><th>Commission</th><th>Gift</th><th>Waybill</th><th>Ad spend</th><th>Net profit</th></tr></thead>
             <tbody>
-              {lines.map(L => (
-                <tr key={L.key}>
-                  <td>{L.name}</td>
-                  <td>{L.orders}</td>
-                  <td>{(L.closingRate * 100).toFixed(0)}%</td>
-                  <td>{money(L.revenue)}</td>
-                  <td>{money(L.cogs)}</td>
-                  <td>{money(L.packaging)}</td>
-                  <td>{money(L.delivery)}</td>
-                  <td>{money(L.commission)}</td>
-                  <td>{money(L.gift)}</td>
-                  <td>{money(L.waybill)}</td>
-                  <td>{money(L.adSpend)}</td>
-                  <td style={{ fontWeight: 600, color: L.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(L.netProfit)}</td>
-                </tr>
-              ))}
+              {filteredGroups.map(G => {
+                const canExpand = G.children.length > 0;
+                const isOpen = !!expandedKeys[G.key];
+                return (
+                  <Fragment key={G.key}>
+                    <tr
+                      onClick={() => setFocusedKey(G.key)}
+                      style={{ cursor: 'pointer', opacity: G.orders === 0 ? 0.55 : 1, background: focusedKey === G.key ? '#FBF6EC' : undefined }}
+                    >
+                      <td style={{ width: '20px' }}>
+                        {canExpand && (
+                          <span
+                            onClick={e => { e.stopPropagation(); setExpandedKeys({ ...expandedKeys, [G.key]: !isOpen }); }}
+                            style={{ cursor: 'pointer', color: '#8A93A0', display: 'inline-block', width: '14px' }}
+                          >{isOpen ? '▾' : '▸'}</span>
+                        )}
+                      </td>
+                      <td>
+                        <span className="pill" style={{ marginRight: '6px', fontSize: '10px', background: G.kind === 'set' ? '#EAF4F1' : '#EEF2F8', color: G.kind === 'set' ? '#1F4D44' : '#4A7FBF', border: '1px solid ' + (G.kind === 'set' ? '#C7DED7' : '#D6E0EE') }}>{G.kind === 'set' ? 'Set' : 'Product'}</span>
+                        {G.name}
+                        {G.sku && <span style={{ marginLeft: '6px', fontFamily: 'monospace', fontSize: '11px', color: '#8A93A0' }}>[{G.sku}]</span>}
+                        {G.orders === 0 && <span style={{ marginLeft: '6px', fontSize: '11px', color: '#8A93A0' }}>— no orders yet</span>}
+                      </td>
+                      <td>{G.orders}</td>
+                      <td>{(G.closingRate * 100).toFixed(0)}%</td>
+                      <td>{money(G.revenue)}</td>
+                      <td>{money(G.cogs)}</td>
+                      <td>{money(G.packaging)}</td>
+                      <td>{money(G.delivery)}</td>
+                      <td>{money(G.commission)}</td>
+                      <td>{money(G.gift)}</td>
+                      <td>{money(G.waybill)}</td>
+                      <td>{money(G.adSpend)}</td>
+                      <td style={{ fontWeight: 600, color: G.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(G.netProfit)}</td>
+                    </tr>
+                    {isOpen && G.children.map(c => (
+                      <tr key={c.key} style={{ background: '#FAFAF7', fontSize: '12px', color: '#4B5566' }}>
+                        <td></td>
+                        <td style={{ paddingLeft: '28px' }}>↳ {c.type === 'package' ? c.name.replace(/^.*?—\s*/, '') : 'No package (plain product)'}</td>
+                        <td>{c.orders}</td>
+                        <td>{(c.closingRate * 100).toFixed(0)}%</td>
+                        <td>{money(c.revenue)}</td>
+                        <td>{money(c.cogs)}</td>
+                        <td>{money(c.packaging)}</td>
+                        <td>{money(c.delivery)}</td>
+                        <td>{money(c.commission)}</td>
+                        <td>{money(c.gift)}</td>
+                        <td colSpan={2} style={{ color: '#8A93A0' }}>(counted once above)</td>
+                        <td style={{ fontWeight: 600, color: c.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(c.netProfit)}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
-      <p style={{ fontSize: '11px', color: '#8A93A0', margin: '8px 0 24px' }}>Waybill/ad spend tagged to a product also apply to any of its packages — so this table's Waybill/Ad spend columns can add up to more than the company-wide total above, which counts each expense once.</p>
+      <p style={{ fontSize: '11px', color: '#8A93A0', margin: '8px 0 24px' }}>Each row is one product or set, no matter how many packages it has — click a row, or use the dropdown above, for the full breakdown. New products and sets appear here automatically, even before their first order.</p>
 
       <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By month (all time)</h3>
       {monthlyRows.length === 0 ? <div className="empty">No delivered &amp; paid orders yet.</div> : (
