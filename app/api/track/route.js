@@ -18,6 +18,7 @@ const STATUS_MESSAGES = {
   Delivered: 'Your order has been delivered. Thank you!',
   Unreachable: 'We tried to reach you about your delivery — please expect a follow-up call.',
   Rescheduled: 'Your delivery has been rescheduled.',
+  'Failed Delivery': 'We attempted delivery but it didn\'t go through — expect a follow-up call to reschedule.',
   Cancelled: 'This order has been cancelled.',
 };
 
