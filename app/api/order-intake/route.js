@@ -189,10 +189,12 @@ export async function POST(request) {
     // Work out the price from whatever it resolved to — never trust a price from outside the CRM.
     let unitPrice = 0;
     let quantityToUse = parseInt(quantity, 10) || 1;
+    let itemLabel = null; // human-readable product/package/set name, for confirmation messages
 
     if (resolvedSetId) {
       const { data: set } = await supabaseAdmin.from('product_sets').select('*').eq('id', resolvedSetId).maybeSingle();
       if (set) {
+        itemLabel = set.name || null;
         if (set.price_mode === 'flat' && set.flat_price != null) {
           unitPrice = Number(set.flat_price);
         } else {
@@ -207,10 +209,16 @@ export async function POST(request) {
       }
     } else if (resolvedPackageId) {
       const { data: pkg } = await supabaseAdmin.from('product_packages').select('*').eq('id', resolvedPackageId).maybeSingle();
-      if (pkg && pkg.price != null) unitPrice = Number(pkg.price);
+      if (pkg) {
+        itemLabel = pkg.name || null;
+        if (pkg.price != null) unitPrice = Number(pkg.price);
+      }
     } else if (source.product_id) {
       const { data: product } = await supabaseAdmin.from('products').select('*').eq('id', source.product_id).maybeSingle();
-      if (product && product.default_price != null) unitPrice = Number(product.default_price);
+      if (product) {
+        itemLabel = product.name || null;
+        if (product.default_price != null) unitPrice = Number(product.default_price);
+      }
     }
 
     function normalizeState(raw) {
@@ -278,7 +286,7 @@ export async function POST(request) {
       const { sms, whatsapp } = await getAutoConfirmSettings(supabaseAdmin);
       if (order.phone && (sms || whatsapp)) {
         await sendOrderConfirmationMessages(supabaseAdmin, {
-          phone: order.phone, customerName: order.customer, orderId: order.id,
+          phone: order.phone, customerName: order.customer, orderId: order.id, itemLabel,
           sendSms: sms, sendWhatsapp: whatsapp,
         });
       }
