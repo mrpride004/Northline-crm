@@ -33,11 +33,18 @@ export default function TrackPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#1F4D44', display: 'flex', alignItems: 'center',
+      minHeight: '100vh', background: '#3730A3', display: 'flex', alignItems: 'center',
       justifyContent: 'center', fontFamily: "'Inter', -apple-system, sans-serif", padding: '24px',
     }}>
       <div style={{ background: '#F6F4EF', borderRadius: '10px', padding: '32px 28px', width: '380px', maxWidth: '100%', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
-        <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '15px', color: '#1F4D44', marginBottom: '4px' }}>Trailblazer</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+          <div style={{
+            width: '28px', height: '28px', borderRadius: '7px', background: 'linear-gradient(135deg, #4F46E5, #3730A3)',
+            color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 700, fontSize: '16px', flexShrink: 0,
+          }}>D</div>
+          <div style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '15px', color: '#3730A3' }}>Trailblazer</div>
+        </div>
         <h1 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '22px', margin: '0 0 16px 0' }}>Track your order</h1>
 
         {loading && <p style={{ color: '#4B5566', fontSize: '14px' }}>Loading…</p>}
@@ -58,7 +65,7 @@ export default function TrackPage() {
                   <div key={step} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
                     <div style={{
                       width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
-                      background: i <= stepIndex ? '#2E6E62' : '#DEDAD0',
+                      background: i <= stepIndex ? '#4F46E5' : '#DEDAD0',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '11px',
                     }}>
                       {i <= stepIndex ? '✓' : ''}
