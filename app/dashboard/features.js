@@ -153,6 +153,13 @@ export function playNotificationSound() {
 
 
 
+function ordinal(n) {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  const suffix = { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th';
+  return `${n}${suffix}`;
+}
+
 export function getCycleStart(date) {
   const d = new Date(date);
   const day = d.getDay(); // 0 = Sunday
@@ -593,7 +600,7 @@ export function MyStockPage({ profile, agentStock, products }) {
 
 // ---------- Confirm order (priority + preferred time + remark, before dispatch) ----------
 // ---------- Status change with optional remark (and delivery fee if delivering) ----------
-export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditFee, onClose, onConfirm }) {
+export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditFee, isAdmin, onClose, onConfirm }) {
   const [remark, setRemark] = useState('');
   const [fee, setFee] = useState(order.delivery_fee || '');
   const [rescheduleDate, setRescheduleDate] = useState(order.reschedule_date || '');
@@ -609,7 +616,7 @@ export function StatusRemarkModal({ order, newStatus, hidePaidCheckbox, canEditF
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h3>Mark as {newStatus}</h3>
-        {isUnverified && (
+        {isUnverified && isAdmin && (
           <p style={{ fontSize: '12px', color: '#8A93A0', marginTop: '-6px', marginBottom: '12px' }}>
             For a customer who placed an order but isn't looking serious, or kept giving excuses on the confirmation call. Record exactly what they said below — this is what makes the status useful.
           </p>
@@ -2113,7 +2120,9 @@ export function CommissionPage({ profile, orders, products, session }) {
   const [ledger, setLedger] = useState([]);
   const [claims, setClaims] = useState([]);
   const [threshold, setThreshold] = useState(0);
+  const [claimFrequency, setClaimFrequency] = useState('weekly');
   const [claimDay, setClaimDay] = useState(1);
+  const [claimDayOfMonth, setClaimDayOfMonth] = useState(1);
   const [windowDays, setWindowDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState(false);
@@ -2125,11 +2134,13 @@ export function CommissionPage({ profile, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }, { data: windowSetting }, { data: myUpsells }] = await Promise.all([
+    const [{ data: led }, { data: cl }, { data: rateSetting }, { data: daySetting }, { data: freqSetting }, { data: domSetting }, { data: windowSetting }, { data: myUpsells }] = await Promise.all([
       supabase.from('commission_ledger').select('*').eq('staff_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('commission_claims').select('*').eq('staff_id', profile.id).order('claimed_at', { ascending: false }),
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_frequency').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_day_of_month').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'success_rate_window_days').maybeSingle(),
       supabase.from('upsells').select('*').eq('staff_id', profile.id).eq('commission_status', 'Eligible').order('created_at', { ascending: false }),
     ]);
@@ -2137,6 +2148,8 @@ export function CommissionPage({ profile, orders, products, session }) {
     setClaims(cl || []);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    setClaimFrequency(freqSetting && freqSetting.value === 'monthly' ? 'monthly' : 'weekly');
+    setClaimDayOfMonth(domSetting ? parseInt(domSetting.value, 10) || 1 : 1);
     setWindowDays(windowSetting ? parseInt(windowSetting.value, 10) || 30 : 30);
     let upsellsWithRules = myUpsells || [];
     const ruleIds = [...new Set(upsellsWithRules.map(u => u.commission_rule_id).filter(Boolean))];
@@ -2172,7 +2185,8 @@ export function CommissionPage({ profile, orders, products, session }) {
   const myDelivered = { length: rateInfo.delivered };
   const myDeliveredPaid = { length: rateInfo.deliveredPaid };
   const eligible = successRate >= threshold;
-  const isClaimDay = new Date().getDay() === claimDay;
+  const isClaimDay = claimFrequency === 'monthly' ? new Date().getDate() === claimDayOfMonth : new Date().getDay() === claimDay;
+  const claimOpensLabel = claimFrequency === 'monthly' ? `the ${ordinal(claimDayOfMonth)} of each month` : DAY_NAMES[claimDay];
 
   const earned = ledger.filter(l => !l.reversed).reduce((sum, l) => sum + Number(l.amount), 0);
   const claimed = claims.filter(c => c.status === 'Approved').reduce((sum, c) => sum + Number(c.amount), 0);
@@ -2223,7 +2237,7 @@ export function CommissionPage({ profile, orders, products, session }) {
           ) : !eligible ? (
             <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>Keep your delivery success rate up to unlock claiming</span>
           ) : !isClaimDay ? (
-            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens {DAY_NAMES[claimDay]}</span>
+            <span style={{ fontSize: '12.5px', background: 'rgba(255,255,255,.15)', padding: '8px 16px', borderRadius: '20px' }}>✓ Eligible — claim opens {claimOpensLabel}</span>
           ) : (
             <button className="btn primary" onClick={claim} disabled={claiming} style={{ background: '#fff', color: '#1F4D44', fontWeight: 700, padding: '11px 28px', fontSize: '14px' }}>
               {claiming ? 'Claiming…' : '🎉 Claim your commission now'}
@@ -2311,7 +2325,9 @@ export function CommissionPage({ profile, orders, products, session }) {
 // ---------- Commission: admin overview ----------
 export function AdminCommissionPage({ profiles, orders, products, session }) {
   const [threshold, setThreshold] = useState(0);
+  const [claimFrequency, setClaimFrequency] = useState('weekly');
   const [claimDay, setClaimDay] = useState(1);
+  const [claimDayOfMonth, setClaimDayOfMonth] = useState(1);
   const [windowDays, setWindowDays] = useState(30);
   const [ledgerAll, setLedgerAll] = useState([]);
   const [claimsAll, setClaimsAll] = useState([]);
@@ -2328,15 +2344,19 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
 
   useEffect(() => { load(); }, []);
   async function load() {
-    const [{ data: rateSetting }, { data: daySetting }, { data: windowSetting }, { data: freeRule }, { data: rules }] = await Promise.all([
+    const [{ data: rateSetting }, { data: daySetting }, { data: freqSetting }, { data: domSetting }, { data: windowSetting }, { data: freeRule }, { data: rules }] = await Promise.all([
       supabase.from('app_settings').select('*').eq('key', 'min_success_rate_to_claim').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'claim_day').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_frequency').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('key', 'claim_day_of_month').maybeSingle(),
       supabase.from('app_settings').select('*').eq('key', 'success_rate_window_days').maybeSingle(),
       supabase.from('free_commission_rules').select('*').limit(1).maybeSingle(),
       supabase.from('commission_rules').select('*'),
     ]);
     setThreshold(rateSetting ? parseFloat(rateSetting.value) || 0 : 0);
     setClaimDay(daySetting ? parseInt(daySetting.value, 10) : 1);
+    setClaimFrequency(freqSetting && freqSetting.value === 'monthly' ? 'monthly' : 'weekly');
+    setClaimDayOfMonth(domSetting ? parseInt(domSetting.value, 10) || 1 : 1);
     setWindowDays(windowSetting ? parseInt(windowSetting.value, 10) || 30 : 30);
     const ruleMap = {};
     (rules || []).forEach(r => { ruleMap[r.product_id] = r; });
@@ -2385,6 +2405,8 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
     await Promise.all([
       supabase.from('app_settings').upsert({ key: 'min_success_rate_to_claim', value: String(threshold) }),
       supabase.from('app_settings').upsert({ key: 'claim_day', value: String(claimDay) }),
+      supabase.from('app_settings').upsert({ key: 'claim_frequency', value: claimFrequency }),
+      supabase.from('app_settings').upsert({ key: 'claim_day_of_month', value: String(claimDayOfMonth) }),
       supabase.from('app_settings').upsert({ key: 'success_rate_window_days', value: String(windowDays) }),
     ]);
     setSaving(false);
@@ -2433,10 +2455,27 @@ export function AdminCommissionPage({ profiles, orders, products, session }) {
       )}
 
       <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '440px' }}>
-        <label className="field-label" style={{ marginTop: 0 }}>Day of the week claims open</label>
-        <select value={claimDay} onChange={e => setClaimDay(parseInt(e.target.value, 10))} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
-          {DAY_NAMES.map((name, i) => <option key={i} value={i}>{name}</option>)}
+        <label className="field-label" style={{ marginTop: 0 }}>Claim cycle</label>
+        <select value={claimFrequency} onChange={e => setClaimFrequency(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
         </select>
+        {claimFrequency === 'monthly' ? (
+          <>
+            <label className="field-label">Day of the month claims open</label>
+            <select value={claimDayOfMonth} onChange={e => setClaimDayOfMonth(parseInt(e.target.value, 10))} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
+              {Array.from({ length: 28 }, (_, i) => i + 1).map(d => <option key={d} value={d}>{ordinal(d)}</option>)}
+            </select>
+            <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '-8px', marginBottom: '14px' }}>Capped at 28 so it falls in every month, including February.</p>
+          </>
+        ) : (
+          <>
+            <label className="field-label">Day of the week claims open</label>
+            <select value={claimDay} onChange={e => setClaimDay(parseInt(e.target.value, 10))} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }}>
+              {DAY_NAMES.map((name, i) => <option key={i} value={i}>{name}</option>)}
+            </select>
+          </>
+        )}
         <label className="field-label">Minimum delivery success rate to claim (%)</label>
         <input type="number" min="0" max="100" value={threshold} onChange={e => setThreshold(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '14px' }} />
         <label className="field-label">Rolling success-rate window (days)</label>

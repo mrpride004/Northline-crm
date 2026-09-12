@@ -123,23 +123,40 @@ function DashboardInner() {
       setProfile(p ? withEffectivePermissions(p, rdMap) : p);
       await refreshAll();
       silentlyRelinkPush(s);
-      if (p && p.role === 'admin') {
-        try {
-          const res = await fetch('/api/team-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.access_token}` },
-          });
-          const body = await res.json();
-          if (res.ok) {
-            const map = {};
-            body.statuses.forEach(st => { map[st.id] = st.last_sign_in_at; });
-            setLastSeen(map);
-          }
-        } catch (e) { console.error('last-seen fetch failed', e); }
-      }
       setLoading(false);
     })();
   }, []);
+
+  // "Last seen" heartbeat — every logged-in user (any role) pings a tiny
+  // presence row every few minutes and whenever the tab becomes visible
+  // again, so admin sees real activity instead of a stale sign-in date.
+  // Deliberately not a `profiles` write (that column would sit behind an
+  // admin-only RLS policy, and would also spam the app-wide "profiles
+  // changed" realtime listener every few minutes from every open session).
+  useEffect(() => {
+    if (!profile) return;
+    function ping() { supabase.rpc('touch_presence').then(null, () => {}); }
+    ping();
+    const interval = setInterval(ping, 3 * 60 * 1000);
+    function onVisible() { if (document.visibilityState === 'visible') ping(); }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
+  }, [profile?.id]);
+
+  // Admin-only: poll the same small presence table (not the heavy refreshAll)
+  // so the Team / order-assignment "last seen" times stay reasonably live.
+  useEffect(() => {
+    if (!profile || profile.role !== 'admin') return;
+    async function loadPresence() {
+      const { data } = await supabase.from('user_presence').select('*');
+      const map = {};
+      (data || []).forEach(r => { map[r.user_id] = r.last_active_at; });
+      setLastSeen(map);
+    }
+    loadPresence();
+    const interval = setInterval(loadPresence, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
@@ -983,7 +1000,9 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
         .filter(p => p.role === 'admin' || (p.role === 'staff' && p.active && p.id !== profile?.id))
         .map(p => p.id);
       notifyUsers(session, {
-        userIds: notifyIds, type: 'new_order', title: 'New order', body: `${data.customer}${data.state ? ' · ' + data.state : ''}`,
+        userIds: notifyIds, type: 'new_order',
+        title: data.staff_id ? 'New order' : 'Order up for grabs',
+        body: `${data.customer}${data.state ? ' · ' + data.state : ''}${data.staff_id ? '' : ' — first to claim it gets it'}`,
         orderId: data.id,
       });
     } finally {
@@ -1057,6 +1076,20 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             orderId: id,
           });
         }
+        // Order sent back to the unassigned pool (staff_id explicitly cleared) —
+        // let every active staff member know it's up for grabs again, so it
+        // gets claimed quickly instead of sitting invisible until someone
+        // happens to check the pool page.
+        if ('staff_id' in patch && !patch.staff_id && current?.staff_id) {
+          const poolNotifyIds = profiles.filter(p => p.role === 'staff' && p.active !== false).map(p => p.id);
+          if (poolNotifyIds.length > 0) {
+            notifyUsers(session, {
+              userIds: poolNotifyIds, type: 'new_order', title: 'Order up for grabs',
+              body: `${current.customer}${current.state ? ' · ' + current.state : ''} — first to claim it gets it`,
+              orderId: id,
+            });
+          }
+        }
       }
       if (patch.status === 'Delivered' || patch.payment_status === 'Paid') {
         await supabase.rpc('sync_upsells_for_order', { p_order_id: id });
@@ -1108,6 +1141,21 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
   }
 
   async function deleteOrder(o) {
+    // A Delivered order already subtracted its stock (and the dispatch agent's
+    // stock, if any) from inventory. Once the order row is gone there's no way
+    // to reconstruct what it was, so that stock has to be added back BEFORE
+    // the delete — otherwise deleting a delivered order permanently loses
+    // real inventory with no trace. Commission tied to this order is removed
+    // automatically (commission_ledger cascades on order delete), so nothing
+    // extra is needed there.
+    if (o.status === 'Delivered') {
+      await adjustStockForOrder(o, 1);
+    }
+    await supabase.from('audit_log').insert({
+      actor_id: profile?.id, actor_name: profile?.full_name, action: 'Order Deleted',
+      order_id: o.id,
+      new_value: `${o.customer} (${o.serial_number ? '#' + o.serial_number : o.id.slice(0, 8)}) — was ${o.status}${o.status === 'Delivered' ? '; stock reversed' : ''}`,
+    });
     await supabase.from('orders').delete().eq('id', o.id);
     setConfirmDeleteOrder(null);
     refresh();
@@ -1455,6 +1503,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
             <p style={{ fontSize: '13px', color: '#4B5566' }}>
               This permanently deletes the order for <strong>{confirmDeleteOrder.customer}</strong> ({confirmDeleteOrder.serial_number ? '#' + confirmDeleteOrder.serial_number : confirmDeleteOrder.id.slice(0, 8)}) and everything tied to it —
               history, upsells, and commission records. This can't be undone.
+              {confirmDeleteOrder.status === 'Delivered' && <> Since this order was Delivered, its stock (and delivery agent's stock, if any) will be added back to inventory first.</>}
             </p>
             <div className="modal-actions">
               <button className="btn" onClick={() => setConfirmDeleteOrder(null)}>Cancel</button>
@@ -1481,7 +1530,7 @@ function OrdersPage({ orders, products, profiles, isAdmin, title, myId, myRole, 
       )}
       {statusChanging && (
         <StatusRemarkModal
-          order={statusChanging.order} newStatus={statusChanging.newStatus}
+          order={statusChanging.order} newStatus={statusChanging.newStatus} isAdmin={isAdmin}
           onClose={() => setStatusChanging(null)}
           onConfirm={({ remark, fee, rescheduleDate, paidNow }) => {
             const patch = { status: statusChanging.newStatus };
