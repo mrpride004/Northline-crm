@@ -3989,6 +3989,573 @@ function OrderSourceModal({ source, products, productSets, profiles, onClose }) 
   );
 }
 
+// ============================================================================
+// Finance: real profit & loss per product/set, and company-wide.
+//
+// Revenue and delivery cost come straight from orders (delivery_fee already
+// existed and is reused as the real cost of getting an order to a customer).
+// Commission comes from commission_ledger (already existed). Everything else
+// — cost of goods, packaging, waybill/freight-in, ad spend, salaries, other
+// overhead — is entered by hand here, since there's no other source of truth
+// for it. Only counts orders that are Delivered AND Paid as real revenue —
+// anything still pending isn't money the company actually has yet.
+// ============================================================================
+
+const EXPENSE_CATEGORIES = [
+  { key: 'waybill', label: 'Waybill / freight-in' },
+  { key: 'ad_spend', label: 'Ad spend' },
+  { key: 'salary', label: 'Salary' },
+  { key: 'other', label: 'Other overhead' },
+];
+
+export function FinanceHub({ products, productSets, packages, orders, profiles, session }) {
+  const [tab, setTab] = useState('profitability');
+  return (
+    <div>
+      <div className="product-tabs" style={{ marginBottom: '18px' }}>
+        <span className={'ptab' + (tab === 'profitability' ? ' active' : '')} onClick={() => setTab('profitability')}>Profitability</span>
+        <span className={'ptab' + (tab === 'expenses' ? ' active' : '')} onClick={() => setTab('expenses')}>Expenses</span>
+        <span className={'ptab' + (tab === 'costs' ? ' active' : '')} onClick={() => setTab('costs')}>Product costs</span>
+      </div>
+      {tab === 'profitability' && <ProfitabilityPage products={products} productSets={productSets} packages={packages} orders={orders} />}
+      {tab === 'expenses' && <ExpensesPage products={products} productSets={productSets} profiles={profiles} session={session} />}
+      {tab === 'costs' && <ProductCostsPage products={products} />}
+    </div>
+  );
+}
+
+function ProductCostsPage({ products }) {
+  const [costs, setCosts] = useState({}); // product_id -> { cost_price, packaging_cost }
+  const [loading, setLoading] = useState(true);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState({});
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    setLoading(true);
+    const { data } = await supabase.from('product_costs').select('*');
+    const map = {};
+    (data || []).forEach(c => { map[c.product_id] = c; });
+    setCosts(map);
+    setLoading(false);
+  }
+
+  function fieldValue(p, field) {
+    return edits[p.id]?.[field] ?? (costs[p.id] ? costs[p.id][field] : 0) ?? 0;
+  }
+  function setField(p, field, val) {
+    setEdits(prev => ({ ...prev, [p.id]: { ...prev[p.id], [field]: val } }));
+  }
+  async function save(p) {
+    const cost_price = parseFloat(fieldValue(p, 'cost_price')) || 0;
+    const packaging_cost = parseFloat(fieldValue(p, 'packaging_cost')) || 0;
+    setSaving(prev => ({ ...prev, [p.id]: true }));
+    const { error } = await supabase.from('product_costs').upsert({ product_id: p.id, cost_price, packaging_cost, updated_at: new Date().toISOString() });
+    setSaving(prev => ({ ...prev, [p.id]: false }));
+    if (error) { alert(error.message); return; }
+    setCosts(prev => ({ ...prev, [p.id]: { product_id: p.id, cost_price, packaging_cost } }));
+  }
+
+  if (loading) return <div className="loading">Loading product costs…</div>;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Product costs</h1><p className="page-sub">What it actually costs the company per unit — this is what the Profitability report subtracts from revenue. Cost price excludes freight-in; log that separately as a Waybill expense.</p></div></div>
+      {products.length === 0 ? <div className="empty">No products added yet.</div> : (
+        <table>
+          <thead><tr><th>Product</th><th>Sells for (default)</th><th>Cost price (₦)</th><th>Packaging cost (₦)</th><th></th></tr></thead>
+          <tbody>
+            {products.map(p => (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td style={{ color: '#8A93A0' }}>{p.default_price ? `₦${Number(p.default_price).toLocaleString()}` : '—'}</td>
+                <td>
+                  <input type="number" min="0" value={fieldValue(p, 'cost_price')} onChange={e => setField(p, 'cost_price', e.target.value)}
+                    style={{ width: '110px', fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+                </td>
+                <td>
+                  <input type="number" min="0" value={fieldValue(p, 'packaging_cost')} onChange={e => setField(p, 'packaging_cost', e.target.value)}
+                    style={{ width: '110px', fontSize: '12px', padding: '5px 8px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+                </td>
+                <td><button className="link-btn" onClick={() => save(p)} disabled={saving[p.id]}>{saving[p.id] ? 'Saving…' : 'Save'}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '10px' }}>A Set's cost is worked out automatically from its component products' cost + packaging prices. A Package's cost uses its base product's cost + packaging, plus the free gift's own cost + packaging if it has one.</p>
+    </div>
+  );
+}
+
+function ExpensesPage({ products, productSets, profiles, session }) {
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState('waybill');
+  const [channel, setChannel] = useState('');
+  const [targetType, setTargetType] = useState('none');
+  const [targetId, setTargetId] = useState('');
+  const [staffId, setStaffId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [filterMonth, setFilterMonth] = useState('');
+
+  useEffect(() => { load(); }, []);
+  async function load() {
+    setLoading(true);
+    const { data } = await supabase.from('expenses').select('*').order('expense_date', { ascending: false });
+    setExpenses(data || []);
+    setLoading(false);
+  }
+
+  function resetForm() {
+    setChannel(''); setTargetType('none'); setTargetId(''); setStaffId(''); setAmount(''); setNotes('');
+  }
+
+  async function addExpense() {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { alert('Enter a valid amount.'); return; }
+    if (category === 'salary' && !staffId) { alert('Pick who this salary is for.'); return; }
+    setSaving(true);
+    const payload = {
+      category,
+      channel: category === 'ad_spend' ? (channel.trim() || null) : null,
+      product_id: targetType === 'product' && targetId ? targetId : null,
+      set_id: targetType === 'set' && targetId ? targetId : null,
+      staff_id: category === 'salary' ? staffId : null,
+      amount: amt,
+      expense_date: expenseDate,
+      notes: notes.trim() || null,
+      created_by: session?.user?.id || null,
+    };
+    const { error } = await supabase.from('expenses').insert(payload);
+    setSaving(false);
+    if (error) { alert(error.message); return; }
+    resetForm();
+    load();
+  }
+
+  async function remove(id) {
+    if (!confirm('Delete this expense entry? This will change past Profitability numbers.')) return;
+    await supabase.from('expenses').delete().eq('id', id);
+    load();
+  }
+
+  const filtered = expenses.filter(e => {
+    if (filterCategory !== 'all' && e.category !== filterCategory) return false;
+    if (filterMonth && String(e.expense_date).slice(0, 7) !== filterMonth) return false;
+    return true;
+  });
+  const totalFiltered = filtered.reduce((s, e) => s + Number(e.amount || 0), 0);
+
+  function labelFor(e) {
+    if (e.product_id) return (products.find(p => p.id === e.product_id) || {}).name || '—';
+    if (e.set_id) return ((productSets || []).find(s => s.id === e.set_id) || {}).name || '—';
+    if (e.staff_id) return (profiles.find(p => p.id === e.staff_id) || {}).full_name || '—';
+    return 'General / company-wide';
+  }
+
+  if (loading) return <div className="loading">Loading expenses…</div>;
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Expenses</h1><p className="page-sub">Log every real cost outside individual orders — freight getting stock from the manufacturer to the office or an agent, ad spend, salaries, and other overhead. These feed straight into the Profitability report.</p></div></div>
+
+      <div style={{ background: '#fff', border: '1px solid #DEDAD0', borderRadius: '8px', padding: '16px', marginBottom: '22px', maxWidth: '540px' }}>
+        <label className="field-label" style={{ marginTop: 0 }}>Category</label>
+        <select value={category} onChange={e => { setCategory(e.target.value); resetForm(); }} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }}>
+          {EXPENSE_CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+        </select>
+
+        {category === 'ad_spend' && (
+          <>
+            <label className="field-label">Channel</label>
+            <input value={channel} onChange={e => setChannel(e.target.value)} placeholder="e.g. Facebook, TikTok, Google" style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }} />
+          </>
+        )}
+
+        {(category === 'waybill' || category === 'ad_spend') && (
+          <>
+            <label className="field-label">Which product/set was this for? (optional)</label>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+              <select value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(''); }} style={{ padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+                <option value="none">Not tied to one</option>
+                <option value="product">A product</option>
+                <option value="set">A set</option>
+              </select>
+              {targetType === 'product' && (
+                <select value={targetId} onChange={e => setTargetId(e.target.value)} style={{ flex: 1, padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+                  <option value="">Choose product…</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              )}
+              {targetType === 'set' && (
+                <select value={targetId} onChange={e => setTargetId(e.target.value)} style={{ flex: 1, padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }}>
+                  <option value="">Choose set…</option>
+                  {(productSets || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              )}
+            </div>
+            <p style={{ fontSize: '11px', color: '#8A93A0', marginTop: '0', marginBottom: '12px' }}>Tagging it counts this cost against that product/set in the Profitability report. Leave untagged and it's counted as general company overhead instead.</p>
+          </>
+        )}
+
+        {category === 'salary' && (
+          <>
+            <label className="field-label">Staff member</label>
+            <select value={staffId} onChange={e => setStaffId(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }}>
+              <option value="">Choose…</option>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>)}
+            </select>
+          </>
+        )}
+
+        <div className="row2" style={{ marginBottom: '12px' }}>
+          <div>
+            <label className="field-label" style={{ marginTop: 0 }}>Amount (₦)</label>
+            <input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+          </div>
+          <div>
+            <label className="field-label" style={{ marginTop: 0 }}>Date</label>
+            <input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+          </div>
+        </div>
+        <label className="field-label">Notes (optional)</label>
+        <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. GIG Logistics waybill for 200 units to Lagos office" style={{ width: '100%', padding: '9px 11px', border: '1px solid #DEDAD0', borderRadius: '4px', marginBottom: '12px' }} />
+        <button className="btn primary" onClick={addExpense} disabled={saving} style={{ width: '100%' }}>{saving ? 'Saving…' : 'Add expense'}</button>
+      </div>
+
+      <div className="product-tabs" style={{ marginBottom: '12px' }}>
+        <span className={'ptab' + (filterCategory === 'all' ? ' active' : '')} onClick={() => setFilterCategory('all')}>All</span>
+        {EXPENSE_CATEGORIES.map(c => (
+          <span key={c.key} className={'ptab' + (filterCategory === c.key ? ' active' : '')} onClick={() => setFilterCategory(c.key)}>{c.label}</span>
+        ))}
+      </div>
+      <div style={{ marginBottom: '12px' }}>
+        <input type="month" value={filterMonth} onChange={e => setFilterMonth(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} />
+      </div>
+
+      <div className="stats" style={{ marginBottom: '14px' }}>
+        <div className="stat"><div className="stat-num">₦{totalFiltered.toLocaleString()}</div><div className="stat-label">Total ({filtered.length} entries)</div></div>
+      </div>
+
+      {filtered.length === 0 ? <div className="empty">No expenses logged for this filter yet.</div> : (
+        <table>
+          <thead><tr><th>Date</th><th>Category</th><th>Channel</th><th>Tied to</th><th>Amount</th><th>Notes</th><th></th></tr></thead>
+          <tbody>
+            {filtered.map(e => (
+              <tr key={e.id}>
+                <td>{e.expense_date}</td>
+                <td>{(EXPENSE_CATEGORIES.find(c => c.key === e.category) || {}).label || e.category}</td>
+                <td>{e.channel || '—'}</td>
+                <td>{labelFor(e)}</td>
+                <td>₦{Number(e.amount).toLocaleString()}</td>
+                <td style={{ fontSize: '12px', color: '#8A93A0' }}>{e.notes || '—'}</td>
+                <td><button className="tiny-x" onClick={() => remove(e.id)}>Remove</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function monthLabel(key) {
+  if (!key) return '—';
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function money(n) {
+  const v = Math.round(Number(n) || 0);
+  return (v < 0 ? '-₦' : '₦') + Math.abs(v).toLocaleString();
+}
+
+export function ProfitabilityPage({ products, productSets, packages, orders }) {
+  const [range, setRange] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [expenses, setExpenses] = useState([]);
+  const [commissionLedger, setCommissionLedger] = useState([]);
+  const [upsellsByOrder, setUpsellsByOrder] = useState({});
+  const [setItems, setSetItems] = useState([]);
+  const [productCosts, setProductCosts] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const [{ data: exp }, { data: ledger }, { data: upsells }, { data: items }, { data: costs }] = await Promise.all([
+        supabase.from('expenses').select('*'),
+        supabase.from('commission_ledger').select('*').eq('reversed', false),
+        supabase.from('upsells').select('*'),
+        supabase.from('product_set_items').select('*'),
+        supabase.from('product_costs').select('*'),
+      ]);
+      setExpenses(exp || []);
+      setCommissionLedger(ledger || []);
+      const map = {};
+      (upsells || []).forEach(u => { if (!map[u.original_order_id]) map[u.original_order_id] = []; map[u.original_order_id].push(u); });
+      setUpsellsByOrder(map);
+      setSetItems(items || []);
+      const costMap = {};
+      (costs || []).forEach(c => { costMap[c.product_id] = c; });
+      setProductCosts(costMap);
+      setLoading(false);
+    })();
+  }, []);
+
+  if (loading) return <div className="loading">Loading profitability…</div>;
+
+  const commissionByOrder = {};
+  commissionLedger.forEach(c => { commissionByOrder[c.order_id] = (commissionByOrder[c.order_id] || 0) + Number(c.amount || 0); });
+
+  const setItemsBySet = {};
+  setItems.forEach(i => { if (!setItemsBySet[i.set_id]) setItemsBySet[i.set_id] = []; setItemsBySet[i.set_id].push(i); });
+
+  function costFor(productId) {
+    return productCosts[productId] || { cost_price: 0, packaging_cost: 0 };
+  }
+
+  function getLine(o) {
+    const current = getCurrentPackage(o, upsellsByOrder[o.id]);
+    if (current.setId) {
+      const set = (productSets || []).find(s => s.id === current.setId);
+      return { type: 'set', id: current.setId, name: (set ? set.name : 'Unknown set') + ' (Set)', quantity: current.quantity || 1, amount: current.amount || 0, tagProductId: null, tagSetId: current.setId, set };
+    }
+    if (current.packageId) {
+      const pkg = (packages || []).find(p => p.id === current.packageId);
+      const baseProduct = pkg ? products.find(p => p.id === pkg.product_id) : null;
+      return { type: 'package', id: current.packageId, name: (baseProduct ? baseProduct.name + ' — ' : '') + (pkg ? pkg.name : 'Unknown package'), quantity: current.quantity || 1, amount: current.amount || 0, tagProductId: pkg ? pkg.product_id : null, tagSetId: null, pkg, baseProduct };
+    }
+    const product = products.find(p => p.id === current.productId);
+    return { type: 'product', id: current.productId || 'unknown', name: product ? product.name : 'Unknown product', quantity: current.quantity || 1, amount: current.amount || 0, tagProductId: current.productId || null, tagSetId: null, product };
+  }
+
+  function unitCogs(line) {
+    if (line.type === 'set') return (setItemsBySet[line.id] || []).reduce((s, i) => s + Number(costFor(i.product_id).cost_price || 0) * Number(i.quantity_per_set || 1), 0);
+    if (line.type === 'package') return line.baseProduct ? Number(costFor(line.baseProduct.id).cost_price || 0) : 0;
+    return line.product ? Number(costFor(line.product.id).cost_price || 0) : 0;
+  }
+  function unitPackaging(line) {
+    if (line.type === 'set') return (setItemsBySet[line.id] || []).reduce((s, i) => s + Number(costFor(i.product_id).packaging_cost || 0) * Number(i.quantity_per_set || 1), 0);
+    if (line.type === 'package') return line.baseProduct ? Number(costFor(line.baseProduct.id).packaging_cost || 0) : 0;
+    return line.product ? Number(costFor(line.product.id).packaging_cost || 0) : 0;
+  }
+  function unitGift(line) {
+    if (line.type !== 'package' || !line.pkg || !line.pkg.gift_product_id) return 0;
+    const gift = products.find(p => p.id === line.pkg.gift_product_id);
+    if (!gift) return 0;
+    const gc = costFor(gift.id);
+    return (Number(gc.cost_price || 0) + Number(gc.packaging_cost || 0)) * Number(line.pkg.gift_quantity || 0);
+  }
+
+  // Builds the per-line breakdown plus clean, non-duplicated company totals
+  // for one set of orders + one set of expenses.
+  function buildStats(ordersList, expensesList) {
+    const lines = {};
+    ordersList.forEach(o => {
+      const line = getLine(o);
+      const key = line.type + ':' + line.id;
+      if (!lines[key]) lines[key] = { key, name: line.name, type: line.type, tagProductId: line.tagProductId, tagSetId: line.tagSetId, orders: 0, deliveredPaid: 0, revenue: 0, cogs: 0, packaging: 0, delivery: 0, commission: 0, gift: 0, waybill: 0, adSpend: 0 };
+      const L = lines[key];
+      L.orders += 1;
+      if (o.status === 'Delivered' && o.payment_status === 'Paid') {
+        L.deliveredPaid += 1;
+        L.revenue += Number(line.amount || 0);
+        L.cogs += unitCogs(line) * line.quantity;
+        L.packaging += unitPackaging(line) * line.quantity;
+        L.gift += unitGift(line) * line.quantity;
+        L.delivery += Number(o.delivery_fee || 0);
+        L.commission += commissionByOrder[o.id] || 0;
+      }
+    });
+    // Tag waybill/ad spend onto every line that shares that product (a
+    // product's packages share its freight/marketing cost) or that set.
+    expensesList.forEach(e => {
+      if (e.category !== 'waybill' && e.category !== 'ad_spend') return;
+      Object.values(lines).forEach(L => {
+        const matches = (e.product_id && L.tagProductId === e.product_id) || (e.set_id && L.tagSetId === e.set_id);
+        if (matches) { if (e.category === 'waybill') L.waybill += Number(e.amount || 0); else L.adSpend += Number(e.amount || 0); }
+      });
+    });
+    const lineArray = Object.values(lines).map(L => ({
+      ...L,
+      closingRate: L.orders > 0 ? L.deliveredPaid / L.orders : 0,
+      netProfit: L.revenue - L.cogs - L.packaging - L.delivery - L.commission - L.gift - L.waybill - L.adSpend,
+    })).sort((a, b) => b.netProfit - a.netProfit);
+
+    // Company totals computed independently (never by summing the per-line
+    // waybill/ad spend, since those can be tagged to more than one line —
+    // e.g. a product and its packages — and would double-count here).
+    const paidOrders = ordersList.filter(o => o.status === 'Delivered' && o.payment_status === 'Paid');
+    const revenue = lineArray.reduce((s, L) => s + L.revenue, 0);
+    const cogs = lineArray.reduce((s, L) => s + L.cogs, 0);
+    const packaging = lineArray.reduce((s, L) => s + L.packaging, 0);
+    const delivery = lineArray.reduce((s, L) => s + L.delivery, 0);
+    const commission = lineArray.reduce((s, L) => s + L.commission, 0);
+    const gift = lineArray.reduce((s, L) => s + L.gift, 0);
+    const waybill = expensesList.filter(e => e.category === 'waybill').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const adSpend = expensesList.filter(e => e.category === 'ad_spend').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const salary = expensesList.filter(e => e.category === 'salary').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const other = expensesList.filter(e => e.category === 'other').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const netProfit = revenue - cogs - packaging - delivery - commission - gift - waybill - adSpend - salary - other;
+    const closingRate = ordersList.length > 0 ? paidOrders.length / ordersList.length : 0;
+    return {
+      lines: lineArray,
+      totals: { orders: ordersList.length, deliveredPaid: paidOrders.length, closingRate, revenue, cogs, packaging, delivery, commission, gift, waybill, adSpend, salary, other, netProfit },
+    };
+  }
+
+  function inDateRange(dateStr) {
+    if (!dateStr) return range === 'all';
+    const d = new Date(dateStr);
+    const now = new Date();
+    if (range === 'all') return true;
+    if (range === 'today') return d.toDateString() === now.toDateString();
+    if (range === '7d') return now - d <= 7 * 24 * 60 * 60 * 1000;
+    if (range === '30d') return now - d <= 30 * 24 * 60 * 60 * 1000;
+    if (range === 'thismonth') return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    if (range === 'custom') {
+      if (fromDate && d < new Date(fromDate)) return false;
+      if (toDate && d > new Date(toDate + 'T23:59:59')) return false;
+      return true;
+    }
+    return true;
+  }
+
+  const scopedOrders = orders.filter(o => inDateRange(o.created_at));
+  const scopedExpenses = expenses.filter(e => inDateRange(e.expense_date));
+  const { lines, totals } = buildStats(scopedOrders, scopedExpenses);
+
+  // "Best month" and "Best product" always look across the FULL history,
+  // regardless of whatever range is selected above — the point is to answer
+  // "what's our best month/product ever", not "best within my current filter".
+  const monthKeys = [...new Set(orders.filter(o => o.status === 'Delivered' && o.payment_status === 'Paid' && o.created_at).map(o => String(o.created_at).slice(0, 7)))];
+  const monthlyRows = monthKeys.map(mk => {
+    const monthOrders = orders.filter(o => String(o.created_at).slice(0, 7) === mk);
+    const monthExpenses = expenses.filter(e => String(e.expense_date).slice(0, 7) === mk);
+    const { totals: mt } = buildStats(monthOrders, monthExpenses);
+    return { month: mk, ...mt };
+  }).sort((a, b) => b.month.localeCompare(a.month));
+  const bestMonth = monthlyRows.slice().sort((a, b) => b.netProfit - a.netProfit)[0];
+
+  const { lines: allTimeLines } = buildStats(orders, expenses);
+  const bestProduct = allTimeLines.filter(l => l.orders > 0).slice().sort((a, b) => b.netProfit - a.netProfit)[0];
+
+  const profitColor = totals.netProfit >= 0 ? '#1F4D44' : '#B0483F';
+
+  return (
+    <div>
+      <div className="topbar"><div><h1 className="page-title">Profitability</h1><p className="page-sub">Real revenue in, real cost out — per product/set, and for the whole company. Only Delivered &amp; Paid orders count as revenue.</p></div></div>
+
+      <div className="product-tabs">
+        <span className={'ptab' + (range === 'today' ? ' active' : '')} onClick={() => setRange('today')}>Today</span>
+        <span className={'ptab' + (range === '7d' ? ' active' : '')} onClick={() => setRange('7d')}>Last 7 days</span>
+        <span className={'ptab' + (range === '30d' ? ' active' : '')} onClick={() => setRange('30d')}>Last 30 days</span>
+        <span className={'ptab' + (range === 'thismonth' ? ' active' : '')} onClick={() => setRange('thismonth')}>This month</span>
+        <span className={'ptab' + (range === 'all' ? ' active' : '')} onClick={() => setRange('all')}>All time</span>
+        <span className={'ptab' + (range === 'custom' ? ' active' : '')} onClick={() => setRange('custom')}>Custom range</span>
+      </div>
+      {range === 'custom' && (
+        <div className="row2" style={{ maxWidth: '420px', margin: '12px 0 16px' }}>
+          <div><label className="field-label" style={{ marginTop: 0 }}>From</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+          <div><label className="field-label" style={{ marginTop: 0 }}>To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #DEDAD0', borderRadius: '4px' }} /></div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', margin: '18px 0' }}>
+        {bestMonth && (
+          <div style={{ background: '#FBF6EC', border: '1px solid #E8DDBE', borderRadius: '8px', padding: '14px 18px', flex: '1 1 260px' }}>
+            <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best month ever</div>
+            <div style={{ fontWeight: 600, fontSize: '15px' }}>{monthLabel(bestMonth.month)}</div>
+            <div style={{ fontSize: '13px', color: bestMonth.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(bestMonth.netProfit)} net profit · {money(bestMonth.revenue)} revenue</div>
+          </div>
+        )}
+        {bestProduct && (
+          <div style={{ background: '#EAF4F1', border: '1px solid #C7DED7', borderRadius: '8px', padding: '14px 18px', flex: '1 1 260px' }}>
+            <div style={{ fontSize: '11px', color: '#8A93A0', marginBottom: '4px' }}>🏆 Best performing product/set ever</div>
+            <div style={{ fontWeight: 600, fontSize: '15px' }}>{bestProduct.name}</div>
+            <div style={{ fontSize: '13px', color: '#1F4D44' }}>{money(bestProduct.netProfit)} net profit · {(bestProduct.closingRate * 100).toFixed(0)}% closing rate</div>
+          </div>
+        )}
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>Company-wide, for this range</h3>
+      <div className="stats" style={{ marginBottom: '10px' }}>
+        <div className="stat"><div className="stat-num">{totals.orders}</div><div className="stat-label">Orders placed</div></div>
+        <div className="stat"><div className="stat-num">{totals.deliveredPaid}</div><div className="stat-label">Delivered &amp; paid</div></div>
+        <div className="stat"><div className="stat-num">{(totals.closingRate * 100).toFixed(1)}%</div><div className="stat-label">Closing rate</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.revenue)}</div><div className="stat-label">Revenue</div></div>
+        <div className="stat"><div className="stat-num" style={{ color: profitColor }}>{money(totals.netProfit)}</div><div className="stat-label">Net profit / (loss)</div></div>
+      </div>
+      <div className="stats" style={{ marginBottom: '20px' }}>
+        <div className="stat"><div className="stat-num">{money(totals.cogs)}</div><div className="stat-label">Cost of goods</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.packaging)}</div><div className="stat-label">Packaging</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.delivery)}</div><div className="stat-label">Delivery to customer</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.commission)}</div><div className="stat-label">Commission</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.gift)}</div><div className="stat-label">Free gifts</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.waybill)}</div><div className="stat-label">Waybill / freight-in</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.adSpend)}</div><div className="stat-label">Ad spend</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.salary)}</div><div className="stat-label">Salaries</div></div>
+        <div className="stat"><div className="stat-num">{money(totals.other)}</div><div className="stat-label">Other overhead</div></div>
+      </div>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By product / set, for this range</h3>
+      {lines.length === 0 ? <div className="empty">No orders in this range yet.</div> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead><tr><th>Product / Set</th><th>Orders</th><th>Closing rate</th><th>Revenue</th><th>COGS</th><th>Packaging</th><th>Delivery</th><th>Commission</th><th>Gift</th><th>Waybill</th><th>Ad spend</th><th>Net profit</th></tr></thead>
+            <tbody>
+              {lines.map(L => (
+                <tr key={L.key}>
+                  <td>{L.name}</td>
+                  <td>{L.orders}</td>
+                  <td>{(L.closingRate * 100).toFixed(0)}%</td>
+                  <td>{money(L.revenue)}</td>
+                  <td>{money(L.cogs)}</td>
+                  <td>{money(L.packaging)}</td>
+                  <td>{money(L.delivery)}</td>
+                  <td>{money(L.commission)}</td>
+                  <td>{money(L.gift)}</td>
+                  <td>{money(L.waybill)}</td>
+                  <td>{money(L.adSpend)}</td>
+                  <td style={{ fontWeight: 600, color: L.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(L.netProfit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p style={{ fontSize: '11px', color: '#8A93A0', margin: '8px 0 24px' }}>Waybill/ad spend tagged to a product also apply to any of its packages — so this table's Waybill/Ad spend columns can add up to more than the company-wide total above, which counts each expense once.</p>
+
+      <h3 style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontSize: '16px', marginBottom: '10px' }}>By month (all time)</h3>
+      {monthlyRows.length === 0 ? <div className="empty">No delivered &amp; paid orders yet.</div> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead><tr><th>Month</th><th>Orders</th><th>Closing rate</th><th>Revenue</th><th>Total costs</th><th>Net profit</th></tr></thead>
+            <tbody>
+              {monthlyRows.map(m => (
+                <tr key={m.month} style={bestMonth && m.month === bestMonth.month ? { background: '#FBF6EC' } : undefined}>
+                  <td>{monthLabel(m.month)} {bestMonth && m.month === bestMonth.month && '🏆'}</td>
+                  <td>{m.orders}</td>
+                  <td>{(m.closingRate * 100).toFixed(0)}%</td>
+                  <td>{money(m.revenue)}</td>
+                  <td>{money(m.revenue - m.netProfit)}</td>
+                  <td style={{ fontWeight: 600, color: m.netProfit >= 0 ? '#1F4D44' : '#B0483F' }}>{money(m.netProfit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PackagePicker({ productId, value, onChange }) {
   const [packages, setPackages] = useState([]);
   useEffect(() => {
