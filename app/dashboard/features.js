@@ -12,7 +12,7 @@ export function statusRowColor(status) {
     Dispatched: '#B6DEF3',
     Delivered: '#BEE4BE',
     Unreachable: '#F0C889',
-    Unverified: '#E0937A',
+    Unverified: '#E06BB8',
     Rescheduled: '#D7BEEC',
     Cancelled: '#EFBEBA',
   };
